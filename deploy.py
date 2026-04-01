@@ -146,7 +146,7 @@ def get_best_plate_crop(frame_bgr: np.ndarray, result):
 def show_result(crop_bgr: np.ndarray, text: str, prefix: str):
     c1, c2 = st.columns(2)
     with c1:
-        st.image(crop_bgr[:, :, ::-1], caption=f"{prefix} Plate Crop", use_container_width=True)
+        st.image(crop_bgr[:, :, ::-1], caption=f"{prefix} Plate Crop", use_column_width=True)
     with c2:
         if text and is_valid_plate(text):
             st.success(f"{prefix} OCR (valid MY plate): {text}")
@@ -193,7 +193,7 @@ with tab1:
             st.image(
                 annotated[:, :, ::-1],
                 caption=f"Detections (conf={conf}, imgsz={imgsz})",
-                use_container_width=True,
+                use_column_width=True,
             )
 
             if crop is not None:
@@ -258,7 +258,7 @@ with tab2:
             progress.progress(1.0)
 
             if best_crop is not None:
-                st.image(best_annotated[:, :, ::-1], caption="Best captured frame", use_container_width=True)
+                st.image(best_annotated[:, :, ::-1], caption="Best captured frame", use_column_width=True)
 
                 voted = vote_plates(ocr_candidates)
                 if not voted:
