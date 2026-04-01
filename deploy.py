@@ -198,7 +198,7 @@ with tab1:
     img_file = st.file_uploader("Choose an image", type=["jpg", "jpeg", "png"], key="img_uploader")
 
     if img_file:
-        file_bytes = np.asarray(bytearray(img_file.read()), dtype=np.uint8)
+        file_bytes = np.asarray(bytearray(img_file.getvalue()), dtype=np.uint8)
         frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
 
         if frame is None:
