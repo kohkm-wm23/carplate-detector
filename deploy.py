@@ -37,6 +37,7 @@ def load_model():
 
 @st.cache_resource
 def load_ocr():
+    # CPU mode by default on Streamlit Cloud
     return PaddleOCR(use_angle_cls=True, lang="en", show_log=False)
 
 
@@ -77,6 +78,7 @@ def run_ocr_stable(crop_bgr: np.ndarray) -> str:
         return ""
 
     texts = []
+    # PaddleOCR output: list -> each line [box, (text, score)]
     if result and len(result) > 0 and result[0]:
         for line in result[0]:
             if len(line) >= 2 and isinstance(line[1], (list, tuple)) and len(line[1]) >= 1:
@@ -102,7 +104,6 @@ def vote_plates(candidates):
     if not candidates:
         return ""
 
-    # Prefer valid MY formats
     valid = [c for c in candidates if is_valid_plate(c)]
     target = valid if valid else candidates
     return Counter(target).most_common(1)[0][0]
