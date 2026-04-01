@@ -12,8 +12,8 @@ from ultralytics import YOLO
 # -----------------------------
 # Config
 # -----------------------------
-st.set_page_config(page_title="ALPR Plate Detection + OCR (Cloud)", layout="wide")
-st.title("ALPR Plate Detection + OCR (Cloud Demo)")
+st.set_page_config(page_title="Car Plate Detection System", layout="wide")
+st.title("Car Plate Detection System")
 
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "models" / "best.pt"
