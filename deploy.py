@@ -4,7 +4,7 @@ import cv2
 import tempfile
 import numpy as np
 import streamlit as st
-import pytesseract
+from paddleocr import PaddleOCR
 from collections import Counter
 from pathlib import Path
 from ultralytics import YOLO
@@ -20,9 +20,6 @@ MODEL_PATH = BASE_DIR / "models" / "best.pt"
 PROJECT_OUT = BASE_DIR / "outputs"
 PROJECT_OUT.mkdir(exist_ok=True)
 
-# Streamlit Cloud Linux tesseract path
-pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
-
 # Malaysia plate regex (general):
 # 1-3 letters + 1-4 digits + optional trailing letter
 PLATE_REGEX = re.compile(r"^[A-Z]{1,3}[0-9]{1,4}[A-Z]?$")
@@ -36,6 +33,11 @@ def load_model():
     if not MODEL_PATH.exists():
         raise FileNotFoundError(f"Model not found: {MODEL_PATH}")
     return YOLO(str(MODEL_PATH))
+
+
+@st.cache_resource
+def load_ocr():
+    return PaddleOCR(use_angle_cls=True, lang="en", show_log=False)
 
 
 def normalize_plate(text: str) -> str:
@@ -69,17 +71,29 @@ def run_ocr_stable(crop_bgr: np.ndarray) -> str:
     if proc is None:
         return ""
 
-    cfg = "--oem 3 --psm 7 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-    txt = pytesseract.image_to_string(proc, config=cfg)
-    txt = normalize_plate(txt)
+    try:
+        result = ocr_engine.ocr(proc, cls=True)
+    except Exception:
+        return ""
 
-    # accept valid MY format first
-    if is_valid_plate(txt):
-        return txt
+    texts = []
+    if result and len(result) > 0 and result[0]:
+        for line in result[0]:
+            if len(line) >= 2 and isinstance(line[1], (list, tuple)) and len(line[1]) >= 1:
+                t = normalize_plate(str(line[1][0]))
+                if t:
+                    texts.append(t)
 
-    # fallback: keep plausible raw OCR for display/debug
-    if 4 <= len(txt) <= 10:
-        return txt
+    if not texts:
+        return ""
+
+    valid = [t for t in texts if is_valid_plate(t)]
+    if valid:
+        return max(valid, key=len)
+
+    candidates = [t for t in texts if 4 <= len(t) <= 10]
+    if candidates:
+        return max(candidates, key=len)
 
     return ""
 
@@ -161,8 +175,9 @@ def show_result(crop_bgr: np.ndarray, text: str, prefix: str):
 # -----------------------------
 try:
     model = load_model()
+    ocr_engine = load_ocr()
 except Exception as e:
-    st.error(f"Model load failed: {e}")
+    st.error(f"Model/OCR load failed: {e}")
     st.stop()
 
 st.sidebar.header("Settings")
