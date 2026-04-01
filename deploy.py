@@ -166,10 +166,11 @@ except Exception as e:
     st.stop()
 
 st.sidebar.header("Settings")
-conf = st.sidebar.slider("Confidence (conf)", 0.0, 1.0, 0.30, 0.05)
-imgsz = st.sidebar.selectbox("Image Size (imgsz)", [320, 480, 640, 960, 1280], index=2)
-video_stride = st.sidebar.slider("Video frame stride (process every Nth frame)", 1, 10, 2)
-vote_samples = st.sidebar.slider("Vote samples (video)", 3, 30, 12)
+conf = st.sidebar.slider("Confidence (conf)", 0.0, 1.0, 0.25, 0.05)
+imgsz = st.sidebar.selectbox("Image Size (imgsz)", [320, 480, 640, 960, 1280], index=4)
+
+video_stride = 1
+vote_samples = 12
 
 tab1, tab2 = st.tabs(["Image Upload", "Video Upload"])
 
