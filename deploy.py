@@ -215,7 +215,7 @@ def predict_car_model(frame_bgr, car_model, conf: float = 0.25, cls_imgsz: int =
 def show_brand_and_model_ui(frame_bgr, brand_model, car_model, conf, imgsz, cls_imgsz):
     if brand_model is not None:
         bl, bs, im_b = detect_car_brand(frame_bgr, brand_model, conf=max(0.2, conf), imgsz=imgsz)
-        st.image(im_b[:, :, ::-1], caption=f"Brand: {bl or 'none'}", use_container_width=True)
+        st.image(im_b[:, :, ::-1], caption=f"Brand: {bl or 'none'}", use_column_width=True)
         if bl:
             st.success(f"Brand: {bl} ({bs:.2f})")
         else:
@@ -227,7 +227,7 @@ def show_brand_and_model_ui(frame_bgr, brand_model, car_model, conf, imgsz, cls_
         cl, cs, im_c = predict_car_model(
             frame_bgr, car_model, conf=max(0.2, conf), cls_imgsz=cls_imgsz, det_imgsz=imgsz
         )
-        st.image(im_c[:, :, ::-1], caption=f"Car model: {cl or 'none'}", use_container_width=True)
+        st.image(im_c[:, :, ::-1], caption=f"Car model: {cl or 'none'}", use_column_width=True)
         if cl:
             st.success(f"Car model: {cl} ({cs:.2f})")
         else:
@@ -239,7 +239,7 @@ def show_brand_and_model_ui(frame_bgr, brand_model, car_model, conf, imgsz, cls_
 def show_result(crop_bgr: np.ndarray, text: str, prefix: str):
     c1, c2 = st.columns(2)
     with c1:
-        st.image(crop_bgr[:, :, ::-1], caption=f"{prefix} Plate Crop", use_container_width=True)
+        st.image(crop_bgr[:, :, ::-1], caption=f"{prefix} Plate Crop", use_column_width=True)
     with c2:
         if text and is_valid_plate(text):
             st.success(f"{prefix} OCR (valid MY plate): {text}")
@@ -282,7 +282,7 @@ if img_file:
         st.image(
             annotated[:, :, ::-1],
             caption=f"Plate detections (conf={conf}, imgsz={imgsz})",
-            use_container_width=True,
+            use_column_width=True,
         )
 
         if crop is not None:
