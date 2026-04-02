@@ -1,3 +1,4 @@
+import html
 import re
 import cv2
 import numpy as np
@@ -212,17 +213,144 @@ def predict_car_model(frame_bgr, car_model, conf: float = 0.25, cls_imgsz: int =
     return str(label), score, annotated
 
 
-def show_result(crop_bgr: np.ndarray, text: str, prefix: str):
-    c1, c2 = st.columns(2)
-    with c1:
-        st.image(crop_bgr[:, :, ::-1], caption=f"{prefix} Plate Crop", use_column_width=True)
-    with c2:
-        if text and is_valid_plate(text):
-            st.success(f"{prefix} OCR (valid MY plate): {text}")
-        elif text:
-            st.warning(f"{prefix} OCR (raw, format uncertain): {text}")
-        else:
-            st.warning(f"{prefix} OCR: No text detected.")
+_RCARD_BOX = (
+    "border:1px solid rgba(128,132,149,0.22);border-radius:14px;padding:1.25rem 1.5rem;"
+    "background:rgba(128,132,149,0.06);"
+)
+
+
+def _result_card_title(label: str) -> str:
+    return (
+        f'<p style="margin:0 0 10px 0;font-size:11px;font-weight:700;letter-spacing:0.12em;'
+        f'color:rgba(128,132,149,0.92);">{html.escape(label)}</p>'
+    )
+
+
+def _result_pill(kind: str, text: str) -> str:
+    if kind == "ok":
+        bg, fg = "rgba(46,125,50,0.16)", "rgba(30,95,35,0.95)"
+    elif kind == "warn":
+        bg, fg = "rgba(230,126,34,0.18)", "rgba(140,80,0,0.95)"
+    else:
+        bg, fg = "rgba(128,132,149,0.14)", "rgba(70,72,82,0.95)"
+    return (
+        f'<span style="display:inline-block;padding:5px 14px;border-radius:999px;'
+        f'background:{bg};color:{fg};font-size:12px;font-weight:600;">{html.escape(text)}</span>'
+    )
+
+
+def _brand_or_model_card_html(title: str, deployed: bool, label: str, score: float, weights_hint: str = "") -> str:
+    head = _result_card_title(title)
+    if not deployed:
+        pill = _result_pill("muted", "Unavailable")
+        hint = (
+            f" Missing weights: <code style='font-size:12px;'>{html.escape(weights_hint)}</code>."
+            if weights_hint
+            else ""
+        )
+        body = (
+            "<p style='margin:8px 0 0 0;font-size:14px;line-height:1.5;color:rgba(128,132,149,0.88);'>"
+            f"Model not deployed for this app.{hint}</p>"
+        )
+    elif not label:
+        pill = _result_pill("warn", "No detection")
+        body = (
+            "<p style='margin:8px 0 0 0;font-size:14px;color:rgba(128,132,149,0.88);'>"
+            "Nothing confident enough to report for this image.</p>"
+        )
+    else:
+        pill = _result_pill("ok", "Detected")
+        esc = html.escape(label)
+        body = (
+            f"<p style='margin:10px 0 6px 0;font-size:1.35rem;font-weight:750;line-height:1.3;'>{esc}</p>"
+            f"<p style='margin:0;font-size:13px;color:rgba(128,132,149,0.85);'>"
+            f"Confidence · {score:.2f}</p>"
+        )
+    return f'<div style="{_RCARD_BOX} min-height:118px;">{head}<div style="margin-bottom:10px;">{pill}</div>{body}</div>'
+
+
+def render_results_section(
+    crop_bgr,
+    plate_txt: str,
+    brand_label: str,
+    brand_score: float,
+    car_label: str,
+    car_score: float,
+    brand_model,
+    car_model,
+    prefix: str = "Image",
+):
+    st.markdown("### Results")
+    st.markdown(
+        "<hr style='margin:0.4rem 0 1.2rem 0;border:none;border-top:1px solid rgba(128,132,149,0.2);' />",
+        unsafe_allow_html=True,
+    )
+
+    if crop_bgr is not None:
+        img_col, detail_col = st.columns([0.4, 0.6], gap="large")
+        with img_col:
+            st.image(
+                crop_bgr[:, :, ::-1],
+                caption=f"{prefix} · plate crop",
+                use_column_width=True,
+            )
+        with detail_col:
+            if plate_txt and is_valid_plate(plate_txt):
+                pill = _result_pill("ok", "Valid MY pattern")
+                sub = "OCR matches the general Malaysia plate pattern."
+            elif plate_txt:
+                pill = _result_pill("warn", "Review format")
+                sub = "Raw OCR does not match the default pattern — verify on the crop."
+            else:
+                pill = _result_pill("warn", "No OCR text")
+                sub = "No reliable characters were read from the crop."
+            val = html.escape(plate_txt) if plate_txt else "—"
+            st.markdown(
+                f'<div style="{_RCARD_BOX} min-height:200px;">'
+                f"{_result_card_title('License plate · OCR')}"
+                f'<div style="margin-bottom:12px;">{pill}</div>'
+                f'<p style="margin:6px 0 10px 0;font-size:1.85rem;font-weight:800;font-family:ui-monospace,Consolas,monospace;'
+                f'letter-spacing:0.1em;line-height:1.2;">{val}</p>'
+                f'<p style="margin:0;font-size:13px;line-height:1.45;color:rgba(128,132,149,0.88);">'
+                f"{html.escape(sub)}</p>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+    else:
+        st.markdown(
+            f'<div style="{_RCARD_BOX} min-height:100px;">'
+            f"{_result_card_title('License plate')}"
+            f'<div style="margin-bottom:10px;">{_result_pill("warn", "Not detected")}</div>'
+            f'<p style="margin:0;font-size:15px;line-height:1.5;color:rgba(128,132,149,0.9);">'
+            "No plate region was found on this upload.</p>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+
+    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+    row_b, row_m = st.columns(2, gap="large")
+    with row_b:
+        st.markdown(
+            _brand_or_model_card_html(
+                "Car brand",
+                brand_model is not None,
+                brand_label,
+                brand_score,
+                weights_hint="models/carbrand/best.pt",
+            ),
+            unsafe_allow_html=True,
+        )
+    with row_m:
+        st.markdown(
+            _brand_or_model_card_html(
+                "Car model",
+                car_model is not None,
+                car_label,
+                car_score,
+                weights_hint="models/carmodel/best.pt",
+            ),
+            unsafe_allow_html=True,
+        )
 
 
 # -----------------------------
@@ -292,27 +420,14 @@ if img_file:
         with row2b:
             st.caption("Reserved")
 
-        st.subheader("Results")
-        st.markdown("**Car plate**")
-        if crop is not None:
-            show_result(crop, plate_txt, "Image")
-        else:
-            st.warning("No plate detected in this image.")
-
-        st.markdown("**Car brand**")
-        if brand_model is not None:
-            if brand_label:
-                st.success(f"Brand: {brand_label} ({brand_score:.2f})")
-            else:
-                st.warning("Brand: not detected.")
-        else:
-            st.info("Brand model not deployed (missing `models/carbrand/best.pt`).")
-
-        st.markdown("**Car model**")
-        if car_model is not None:
-            if car_label:
-                st.success(f"Car model: {car_label} ({car_score:.2f})")
-            else:
-                st.warning("Car model: no prediction.")
-        else:
-            st.info("Car model not deployed (missing `models/carmodel/best.pt`).")
+        render_results_section(
+            crop,
+            plate_txt,
+            brand_label,
+            brand_score,
+            car_label,
+            car_score,
+            brand_model,
+            car_model,
+            prefix="Image",
+        )
