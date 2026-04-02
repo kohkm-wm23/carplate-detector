@@ -215,7 +215,7 @@ def predict_car_model(frame_bgr, car_model, conf: float = 0.25, cls_imgsz: int =
 def show_result(crop_bgr: np.ndarray, text: str, prefix: str):
     c1, c2 = st.columns(2)
     with c1:
-        st.image(crop_bgr[:, :, ::-1], caption=f"{prefix} Plate Crop", use_container_width=True)
+        st.image(crop_bgr[:, :, ::-1], caption=f"{prefix} Plate Crop", use_column_width=True)
     with c2:
         if text and is_valid_plate(text):
             st.success(f"{prefix} OCR (valid MY plate): {text}")
@@ -275,18 +275,18 @@ if img_file:
             st.image(
                 annotated_plate[:, :, ::-1],
                 caption=f"Plate detection (conf={conf}, imgsz={imgsz})",
-                use_container_width=True,
+                use_column_width=True,
             )
         with row1b:
             if brand_model is not None:
-                st.image(im_brand[:, :, ::-1], caption="Brand detection", use_container_width=True)
+                st.image(im_brand[:, :, ::-1], caption="Brand detection", use_column_width=True)
             else:
                 st.caption("Brand model not deployed (`models/carbrand/best.pt`).")
 
         row2a, row2b = st.columns(2)
         with row2a:
             if car_model is not None:
-                st.image(im_car[:, :, ::-1], caption="Car model detection", use_container_width=True)
+                st.image(im_car[:, :, ::-1], caption="Car model detection", use_column_width=True)
             else:
                 st.caption("Car model not deployed (`models/carmodel/best.pt`).")
         with row2b:
