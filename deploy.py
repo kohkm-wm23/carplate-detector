@@ -26,6 +26,14 @@ PROJECT_OUT.mkdir(exist_ok=True)
 # Malaysia plate (general): 1-3 letters + 1-4 digits + optional trailing letter
 PLATE_REGEX = re.compile(r"^[A-Z]{1,3}[0-9]{1,4}[A-Z]?$")
 
+# Match run_ocr_stable() minimums so we prefer crops OCR can actually use
+MIN_PLATE_CROP_W = 90
+MIN_PLATE_CROP_H = 25
+_PAD_X_STD = 0.03
+_PAD_Y_STD = 0.08
+_PAD_X_EXPAND = 0.10
+_PAD_Y_EXPAND = 0.20
+
 
 # -----------------------------
 # Model + OCR loaders
@@ -78,20 +86,18 @@ def preprocess_for_ocr(crop_bgr: np.ndarray):
     return th
 
 
-def run_ocr_stable(crop_bgr: np.ndarray, ocr_engine) -> str:
+def preprocess_for_ocr_grayscale_bgr(crop_bgr: np.ndarray):
+    """Upscaled grayscale as BGR — second pass when Otsu binary fails OCR."""
     h, w = crop_bgr.shape[:2]
-    if w < 90 or h < 25:
-        return ""
+    if h < 10 or w < 20:
+        return None
+    up = cv2.resize(crop_bgr, None, fx=2.5, fy=2.5, interpolation=cv2.INTER_CUBIC)
+    gray = cv2.cvtColor(up, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+    return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
-    proc = preprocess_for_ocr(crop_bgr)
-    if proc is None:
-        return ""
 
-    try:
-        result = ocr_engine.ocr(proc, cls=True)
-    except Exception:
-        return ""
-
+def _ocr_lines_to_texts(result) -> list:
     texts = []
     if result and len(result) > 0 and result[0]:
         for line in result[0]:
@@ -99,19 +105,62 @@ def run_ocr_stable(crop_bgr: np.ndarray, ocr_engine) -> str:
                 t = normalize_plate(str(line[1][0]))
                 if t:
                     texts.append(t)
+    return texts
 
+
+def _pick_plate_string_from_texts(texts: list) -> str:
     if not texts:
         return ""
-
     valid = [t for t in texts if is_valid_plate(t)]
     if valid:
         return max(valid, key=len)
-
     candidates = [t for t in texts if 4 <= len(t) <= 10]
     if candidates:
         return max(candidates, key=len)
-
     return ""
+
+
+def run_ocr_stable(crop_bgr: np.ndarray, ocr_engine) -> str:
+    h, w = crop_bgr.shape[:2]
+    if w < MIN_PLATE_CROP_W or h < MIN_PLATE_CROP_H:
+        return ""
+
+    def ocr_image(arr) -> str:
+        if arr is None:
+            return ""
+        try:
+            res = ocr_engine.ocr(arr, cls=True)
+        except Exception:
+            return ""
+        return _pick_plate_string_from_texts(_ocr_lines_to_texts(res))
+
+    proc_bin = preprocess_for_ocr(crop_bgr)
+    if proc_bin is not None:
+        out = ocr_image(proc_bin)
+        if out:
+            return out
+
+    proc_gray = preprocess_for_ocr_grayscale_bgr(crop_bgr)
+    out = ocr_image(proc_gray)
+    if out:
+        return out
+    return ""
+
+
+def _extract_padded_crop(frame_bgr, x1, y1, x2, y2, fh, fw, pad_x_frac: float, pad_y_frac: float):
+    """xyxy from detector (not yet padded). Returns crop and clip coordinates after padding."""
+    pad_x = int((x2 - x1) * pad_x_frac)
+    pad_y = int((y2 - y1) * pad_y_frac)
+    x1p = max(0, x1 - pad_x)
+    y1p = max(0, y1 - pad_y)
+    x2p = min(fw - 1, x2 + pad_x)
+    y2p = min(fh - 1, y2 + pad_y)
+    if x2p <= x1p or y2p <= y1p:
+        return None, None
+    crop = frame_bgr[y1p:y2p, x1p:x2p]
+    if crop.size == 0:
+        return None, None
+    return crop, (x1p, y1p, x2p, y2p)
 
 
 def get_best_plate_crop(frame_bgr: np.ndarray, result):
@@ -121,40 +170,48 @@ def get_best_plate_crop(frame_bgr: np.ndarray, result):
     if boxes is None or len(boxes) == 0:
         return None, None, 0.0, annotated
 
-    h, w = frame_bgr.shape[:2]
-    best_score = 0.0
-    best_crop = None
-    best_box = None
-
+    fh, fw = frame_bgr.shape[:2]
+    scored = []
     for b in boxes:
         xyxy = b.xyxy[0].cpu().numpy().astype(int)
-        conf = float(b.conf[0].cpu().numpy())
-
-        x1, y1, x2, y2 = xyxy.tolist()
-
-        pad_x = int((x2 - x1) * 0.03)
-        pad_y = int((y2 - y1) * 0.08)
-
-        x1 = max(0, x1 - pad_x)
-        y1 = max(0, y1 - pad_y)
-        x2 = min(w - 1, x2 + pad_x)
-        y2 = min(h - 1, y2 + pad_y)
-
+        det_conf = float(b.conf[0].cpu().numpy())
+        x1, y1, x2, y2 = [int(v) for v in xyxy.tolist()]
         bw = max(0, x2 - x1)
         bh = max(0, y2 - y1)
         area = bw * bh
         if area <= 0:
             continue
+        score = det_conf * np.sqrt(area)
+        scored.append((score, x1, y1, x2, y2))
 
-        score = conf * np.sqrt(area)
-        if score > best_score:
-            crop = frame_bgr[y1:y2, x1:x2]
-            if crop.size > 0:
-                best_score = score
-                best_crop = crop
-                best_box = (x1, y1, x2, y2)
+    if not scored:
+        return None, None, 0.0, annotated
 
-    return best_crop, best_box, best_score, annotated
+    scored.sort(key=lambda t: t[0], reverse=True)
+
+    def first_meeting_min(pxf, pyf):
+        for score, x1, y1, x2, y2 in scored:
+            crop, box = _extract_padded_crop(frame_bgr, x1, y1, x2, y2, fh, fw, pxf, pyf)
+            if crop is None:
+                continue
+            ch, cw = crop.shape[:2]
+            if cw >= MIN_PLATE_CROP_W and ch >= MIN_PLATE_CROP_H:
+                return crop, box, score
+        return None, None, None
+
+    crop, box, score = first_meeting_min(_PAD_X_STD, _PAD_Y_STD)
+    if crop is not None:
+        return crop, box, score, annotated
+
+    crop, box, score = first_meeting_min(_PAD_X_EXPAND, _PAD_Y_EXPAND)
+    if crop is not None:
+        return crop, box, score, annotated
+
+    top_score, x1, y1, x2, y2 = scored[0]
+    crop, box = _extract_padded_crop(frame_bgr, x1, y1, x2, y2, fh, fw, _PAD_X_STD, _PAD_Y_STD)
+    if crop is None:
+        return None, None, 0.0, annotated
+    return crop, box, top_score, annotated
 
 
 def detect_car_brand(frame_bgr, brand_model, conf: float = 0.25, imgsz: int = 960):
@@ -377,7 +434,22 @@ except Exception as e:
     st.stop()
 
 st.sidebar.header("Settings")
-conf = st.sidebar.slider("Confidence (conf)", 0.0, 1.0, 0.15, 0.05)
+plate_conf = st.sidebar.slider(
+    "Plate detection confidence",
+    0.0,
+    1.0,
+    0.15,
+    0.05,
+    help="YOLO threshold for the license-plate model only. Lower keeps more plate boxes (feeds OCR).",
+)
+det_conf = st.sidebar.slider(
+    "Brand / model confidence",
+    0.0,
+    1.0,
+    0.25,
+    0.05,
+    help="YOLO threshold for car brand and car model heads (not used for OCR).",
+)
 imgsz = st.sidebar.selectbox("Image Size (imgsz)", [320, 480, 640, 960, 1280], index=4)
 car_cls_imgsz = st.sidebar.selectbox("Car model imgsz (classify)", [224, 320, 384, 448], index=0)
 
@@ -391,29 +463,38 @@ if img_file:
     if frame is None:
         st.error("Failed to read image.")
     else:
-        result = plate_model.predict(source=frame, conf=conf, imgsz=imgsz, verbose=False)[0]
+        result = plate_model.predict(source=frame, conf=plate_conf, imgsz=imgsz, verbose=False)[0]
         crop, _, _, annotated_plate = get_best_plate_crop(frame, result)
 
+        brand_use_conf = max(0.2, det_conf)
         brand_label, brand_score, im_brand = "", 0.0, None
         if brand_model is not None:
             brand_label, brand_score, im_brand = detect_car_brand(
-                frame, brand_model, conf=max(0.2, conf), imgsz=imgsz
+                frame, brand_model, conf=brand_use_conf, imgsz=imgsz
             )
 
         car_label, car_score, im_car = "", 0.0, None
         if car_model is not None:
             car_label, car_score, im_car = predict_car_model(
-                frame, car_model, conf=max(0.2, conf), cls_imgsz=car_cls_imgsz, det_imgsz=imgsz
+                frame, car_model, conf=brand_use_conf, cls_imgsz=car_cls_imgsz, det_imgsz=imgsz
             )
 
         plate_txt = run_ocr_stable(crop, ocr_engine) if crop is not None else ""
+
+        if crop is not None:
+            ch, cw = crop.shape[:2]
+            st.sidebar.caption(
+                f"Plate crop: {cw}×{ch} px (OCR min {MIN_PLATE_CROP_W}×{MIN_PLATE_CROP_H})"
+            )
+        else:
+            st.sidebar.caption("Plate crop: none at this plate confidence.")
 
         st.subheader("Detections")
         row1a, row1b = st.columns(2)
         with row1a:
             st.image(
                 annotated_plate[:, :, ::-1],
-                caption=f"Plate detection (conf={conf}, imgsz={imgsz})",
+                caption=f"Plate detection (plate_conf={plate_conf}, imgsz={imgsz})",
                 use_column_width=True,
             )
         with row1b:
