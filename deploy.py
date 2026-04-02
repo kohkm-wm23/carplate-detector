@@ -377,7 +377,7 @@ except Exception as e:
     st.stop()
 
 st.sidebar.header("Settings")
-conf = st.sidebar.slider("Confidence (conf)", 0.0, 1.0, 0.25, 0.05)
+conf = st.sidebar.slider("Confidence (conf)", 0.0, 1.0, 0.15, 0.05)
 imgsz = st.sidebar.selectbox("Image Size (imgsz)", [320, 480, 640, 960, 1280], index=4)
 car_cls_imgsz = st.sidebar.selectbox("Car model imgsz (classify)", [224, 320, 384, 448], index=0)
 
