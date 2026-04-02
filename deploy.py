@@ -1,4 +1,3 @@
-import base64
 import html
 import re
 import cv2
@@ -220,19 +219,6 @@ _RCARD_BOX = (
 )
 
 
-def _bgr_to_png_data_url(bgr: np.ndarray, max_side: int = 520) -> str:
-    if bgr is None or bgr.size == 0:
-        return ""
-    h, w = bgr.shape[:2]
-    if max(h, w) > max_side:
-        scale = max_side / max(h, w)
-        bgr = cv2.resize(bgr, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
-    ok, buf = cv2.imencode(".png", bgr, [cv2.IMWRITE_PNG_COMPRESSION, 3])
-    if not ok:
-        return ""
-    return "data:image/png;base64," + base64.b64encode(buf.tobytes()).decode("ascii")
-
-
 def _result_card_title(label: str) -> str:
     return (
         f'<p style="margin:0 0 10px 0;font-size:11px;font-weight:700;letter-spacing:0.12em;'
@@ -259,18 +245,8 @@ def _brand_or_model_card_html(
     label: str,
     score: float,
     weights_hint: str = "",
-    preview_data_url: str = "",
 ) -> str:
     head = _result_card_title(title)
-    preview_blk = ""
-    if preview_data_url:
-        preview_blk = (
-            '<div style="margin:0 0 12px 0;border-radius:10px;overflow:hidden;'
-            'background:rgba(0,0,0,0.18);line-height:0;">'
-            f'<img src="{preview_data_url}" alt="" '
-            'style="width:100%;height:140px;object-fit:contain;display:block;" />'
-            "</div>"
-        )
     if not deployed:
         pill = _result_pill("muted", "Unavailable")
         hint = (
@@ -297,7 +273,7 @@ def _brand_or_model_card_html(
             f"Confidence · {score:.2f}</p>"
         )
     return (
-        f'<div style="{_RCARD_BOX} min-height:118px;">{head}{preview_blk}'
+        f'<div style="{_RCARD_BOX} min-height:118px;">{head}'
         f'<div style="margin-bottom:10px;">{pill}</div>{body}</div>'
     )
 
@@ -311,8 +287,6 @@ def render_results_section(
     car_score: float,
     brand_model,
     car_model,
-    brand_preview_bgr=None,
-    car_preview_bgr=None,
     prefix: str = "Image",
 ):
     st.markdown("### Results")
@@ -322,30 +296,14 @@ def render_results_section(
     )
 
     plate_row_min_h = "min-height:280px;"
-    crop_card_inner = (
-        "display:flex;align-items:center;justify-content:center;"
-        "min-height:200px;padding:10px;border-radius:10px;background:rgba(0,0,0,0.12);"
-    )
 
     if crop_bgr is not None:
-        crop_url = _bgr_to_png_data_url(crop_bgr, max_side=560)
         img_col, detail_col = st.columns(2, gap="large")
         with img_col:
-            cap = html.escape(f"{prefix} · plate crop")
-            img_html = (
-                f'<img src="{crop_url}" alt="Plate crop" '
-                'style="max-width:100%;max-height:220px;width:auto;height:auto;object-fit:contain;'
-                'border-radius:8px;display:block;" />'
-                if crop_url
-                else "<p>No image</p>"
-            )
-            st.markdown(
-                f'<div style="{_RCARD_BOX} {plate_row_min_h} display:flex;flex-direction:column;">'
-                f"{_result_card_title('Plate crop')}"
-                f'<p style="margin:-4px 0 10px 0;font-size:12px;color:rgba(128,132,149,0.75);">{cap}</p>'
-                f'<div style="{crop_card_inner}">{img_html}</div>'
-                f"</div>",
-                unsafe_allow_html=True,
+            st.image(
+                crop_bgr[:, :, ::-1],
+                caption=f"{prefix} · plate crop",
+                use_column_width=True,
             )
         with detail_col:
             if plate_txt and is_valid_plate(plate_txt):
@@ -381,8 +339,6 @@ def render_results_section(
         )
 
     st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
-    brand_prev = _bgr_to_png_data_url(brand_preview_bgr, max_side=420) if brand_preview_bgr is not None else ""
-    car_prev = _bgr_to_png_data_url(car_preview_bgr, max_side=420) if car_preview_bgr is not None else ""
     row_b, row_m = st.columns(2, gap="large")
     with row_b:
         st.markdown(
@@ -392,7 +348,6 @@ def render_results_section(
                 brand_label,
                 brand_score,
                 weights_hint="models/carbrand/best.pt",
-                preview_data_url=brand_prev,
             ),
             unsafe_allow_html=True,
         )
@@ -404,7 +359,6 @@ def render_results_section(
                 car_label,
                 car_score,
                 weights_hint="models/carmodel/best.pt",
-                preview_data_url=car_prev,
             ),
             unsafe_allow_html=True,
         )
@@ -486,7 +440,5 @@ if img_file:
             car_score,
             brand_model,
             car_model,
-            brand_preview_bgr=im_brand,
-            car_preview_bgr=im_car,
             prefix="Image",
         )
