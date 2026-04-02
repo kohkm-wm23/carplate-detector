@@ -212,34 +212,10 @@ def predict_car_model(frame_bgr, car_model, conf: float = 0.25, cls_imgsz: int =
     return str(label), score, annotated
 
 
-def show_brand_and_model_ui(frame_bgr, brand_model, car_model, conf, imgsz, cls_imgsz):
-    if brand_model is not None:
-        bl, bs, im_b = detect_car_brand(frame_bgr, brand_model, conf=max(0.2, conf), imgsz=imgsz)
-        st.image(im_b[:, :, ::-1], caption=f"Brand: {bl or 'none'}", use_column_width=True)
-        if bl:
-            st.success(f"Brand: {bl} ({bs:.2f})")
-        else:
-            st.warning("Brand: not detected.")
-    else:
-        st.info("Brand model not deployed (missing `models/carbrand/best.pt`).")
-
-    if car_model is not None:
-        cl, cs, im_c = predict_car_model(
-            frame_bgr, car_model, conf=max(0.2, conf), cls_imgsz=cls_imgsz, det_imgsz=imgsz
-        )
-        st.image(im_c[:, :, ::-1], caption=f"Car model: {cl or 'none'}", use_column_width=True)
-        if cl:
-            st.success(f"Car model: {cl} ({cs:.2f})")
-        else:
-            st.warning("Car model: no prediction.")
-    else:
-        st.info("Car model not deployed (missing `models/carmodel/best.pt`).")
-
-
 def show_result(crop_bgr: np.ndarray, text: str, prefix: str):
     c1, c2 = st.columns(2)
     with c1:
-        st.image(crop_bgr[:, :, ::-1], caption=f"{prefix} Plate Crop", use_column_width=True)
+        st.image(crop_bgr[:, :, ::-1], caption=f"{prefix} Plate Crop", use_container_width=True)
     with c2:
         if text and is_valid_plate(text):
             st.success(f"{prefix} OCR (valid MY plate): {text}")
@@ -277,19 +253,66 @@ if img_file:
         st.error("Failed to read image.")
     else:
         result = plate_model.predict(source=frame, conf=conf, imgsz=imgsz, verbose=False)[0]
-        crop, _, _, annotated = get_best_plate_crop(frame, result)
+        crop, _, _, annotated_plate = get_best_plate_crop(frame, result)
 
-        st.image(
-            annotated[:, :, ::-1],
-            caption=f"Plate detections (conf={conf}, imgsz={imgsz})",
-            use_column_width=True,
-        )
+        brand_label, brand_score, im_brand = "", 0.0, None
+        if brand_model is not None:
+            brand_label, brand_score, im_brand = detect_car_brand(
+                frame, brand_model, conf=max(0.2, conf), imgsz=imgsz
+            )
 
+        car_label, car_score, im_car = "", 0.0, None
+        if car_model is not None:
+            car_label, car_score, im_car = predict_car_model(
+                frame, car_model, conf=max(0.2, conf), cls_imgsz=car_cls_imgsz, det_imgsz=imgsz
+            )
+
+        plate_txt = run_ocr_stable(crop, ocr_engine) if crop is not None else ""
+
+        st.subheader("Detections")
+        row1a, row1b = st.columns(2)
+        with row1a:
+            st.image(
+                annotated_plate[:, :, ::-1],
+                caption=f"Plate detection (conf={conf}, imgsz={imgsz})",
+                use_container_width=True,
+            )
+        with row1b:
+            if brand_model is not None:
+                st.image(im_brand[:, :, ::-1], caption="Brand detection", use_container_width=True)
+            else:
+                st.caption("Brand model not deployed (`models/carbrand/best.pt`).")
+
+        row2a, row2b = st.columns(2)
+        with row2a:
+            if car_model is not None:
+                st.image(im_car[:, :, ::-1], caption="Car model detection", use_container_width=True)
+            else:
+                st.caption("Car model not deployed (`models/carmodel/best.pt`).")
+        with row2b:
+            st.caption("Reserved")
+
+        st.subheader("Results")
+        st.markdown("**Car plate**")
         if crop is not None:
-            txt = run_ocr_stable(crop, ocr_engine)
-            show_result(crop, txt, "Image")
+            show_result(crop, plate_txt, "Image")
         else:
             st.warning("No plate detected in this image.")
 
-        st.subheader("Car brand & model (full image)")
-        show_brand_and_model_ui(frame, brand_model, car_model, conf, imgsz, car_cls_imgsz)
+        st.markdown("**Car brand**")
+        if brand_model is not None:
+            if brand_label:
+                st.success(f"Brand: {brand_label} ({brand_score:.2f})")
+            else:
+                st.warning("Brand: not detected.")
+        else:
+            st.info("Brand model not deployed (missing `models/carbrand/best.pt`).")
+
+        st.markdown("**Car model**")
+        if car_model is not None:
+            if car_label:
+                st.success(f"Car model: {car_label} ({car_score:.2f})")
+            else:
+                st.warning("Car model: no prediction.")
+        else:
+            st.info("Car model not deployed (missing `models/carmodel/best.pt`).")
