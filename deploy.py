@@ -164,11 +164,10 @@ def _extract_padded_crop(frame_bgr, x1, y1, x2, y2, fh, fw, pad_x_frac: float, p
 
 
 def get_best_plate_crop(frame_bgr: np.ndarray, result):
-    annotated = result.plot()
     boxes = result.boxes
 
     if boxes is None or len(boxes) == 0:
-        return None, None, 0.0, annotated
+        return None, None, 0.0
 
     fh, fw = frame_bgr.shape[:2]
     scored = []
@@ -185,7 +184,7 @@ def get_best_plate_crop(frame_bgr: np.ndarray, result):
         scored.append((score, x1, y1, x2, y2))
 
     if not scored:
-        return None, None, 0.0, annotated
+        return None, None, 0.0
 
     scored.sort(key=lambda t: t[0], reverse=True)
 
@@ -201,25 +200,122 @@ def get_best_plate_crop(frame_bgr: np.ndarray, result):
 
     crop, box, score = first_meeting_min(_PAD_X_STD, _PAD_Y_STD)
     if crop is not None:
-        return crop, box, score, annotated
+        return crop, box, score
 
     crop, box, score = first_meeting_min(_PAD_X_EXPAND, _PAD_Y_EXPAND)
     if crop is not None:
-        return crop, box, score, annotated
+        return crop, box, score
 
     top_score, x1, y1, x2, y2 = scored[0]
     crop, box = _extract_padded_crop(frame_bgr, x1, y1, x2, y2, fh, fw, _PAD_X_STD, _PAD_Y_STD)
     if crop is None:
-        return None, None, 0.0, annotated
-    return crop, box, top_score, annotated
+        return None, None, 0.0
+    return crop, box, top_score
+
+
+def _cls_name(names, cls_id: int) -> str:
+    if isinstance(names, dict):
+        return str(names.get(cls_id, str(cls_id)))
+    if 0 <= cls_id < len(names):
+        return str(names[cls_id])
+    return str(cls_id)
+
+
+def _draw_detection_boxes_bgr(
+    im_bgr: np.ndarray,
+    boxes,
+    names,
+    color_bgr: tuple,
+    tag: str,
+) -> None:
+    if boxes is None or len(boxes) == 0:
+        return
+    xyxy = boxes.xyxy.cpu().numpy()
+    confs = boxes.conf.cpu().numpy()
+    clss = boxes.cls.cpu().numpy().astype(int)
+    for i in range(len(boxes)):
+        x1, y1, x2, y2 = [int(v) for v in xyxy[i]]
+        cls_id = int(clss[i])
+        cf = float(confs[i])
+        lab = _cls_name(names, cls_id)
+        label = f"{tag}{lab} {cf:.2f}"
+        cv2.rectangle(im_bgr, (x1, y1), (x2, y2), color_bgr, 2)
+        y_txt = max(y1 - 6, 18)
+        cv2.putText(
+            im_bgr,
+            label,
+            (x1, y_txt),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            color_bgr,
+            2,
+            cv2.LINE_AA,
+        )
+
+
+def draw_combined_detection_plot(
+    frame_bgr: np.ndarray,
+    plate_result,
+    brand_result,
+    car_result,
+    plate_model,
+    brand_model,
+    car_model,
+    car_label: str,
+    car_score: float,
+) -> np.ndarray:
+    """Single BGR image: plate + brand + model overlays (boxes and/or classify banner)."""
+    canvas = frame_bgr.copy()
+    h, w = canvas.shape[:2]
+
+    COL_PLATE = (0, 215, 255)  # BGR amber / plate
+    COL_BRAND = (255, 128, 0)  # BGR brand accent
+    COL_MODEL = (80, 220, 80)  # BGR model / green
+
+    if plate_result is not None and plate_result.boxes is not None:
+        _draw_detection_boxes_bgr(canvas, plate_result.boxes, plate_model.names, COL_PLATE, "plate ")
+
+    if brand_model is not None and brand_result is not None and brand_result.boxes is not None:
+        _draw_detection_boxes_bgr(canvas, brand_result.boxes, brand_model.names, COL_BRAND, "brand ")
+
+    if car_model is not None and car_result is not None:
+        probs = getattr(car_result, "probs", None)
+        if probs is not None and car_label:
+            banner = f"model {car_label} {car_score:.2f}"
+            tw = min(int(cv2.getTextSize(banner, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0][0]) + 20, w - 10)
+            cv2.rectangle(canvas, (6, 6), (6 + tw, 42), COL_MODEL, -1)
+            cv2.putText(
+                canvas,
+                banner,
+                (14, 32),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+        elif car_result.boxes is not None:
+            _draw_detection_boxes_bgr(canvas, car_result.boxes, car_model.names, COL_MODEL, "model ")
+
+    leg = "Plate (amber)  Brand (orange)  Model (green)"
+    cv2.putText(
+        canvas,
+        leg,
+        (8, h - 12),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.5,
+        (220, 220, 220),
+        1,
+        cv2.LINE_AA,
+    )
+    return canvas
 
 
 def detect_car_brand(frame_bgr, brand_model, conf: float = 0.25, imgsz: int = 960):
     result = brand_model.predict(source=frame_bgr, conf=conf, imgsz=imgsz, verbose=False)[0]
-    annotated = result.plot()
     boxes = result.boxes
     if boxes is None or len(boxes) == 0:
-        return "", 0.0, annotated
+        return "", 0.0, result
 
     confs = boxes.conf.cpu().numpy()
     best_i = int(np.argmax(confs))
@@ -227,11 +323,8 @@ def detect_car_brand(frame_bgr, brand_model, conf: float = 0.25, imgsz: int = 96
     score = float(confs[best_i])
 
     names = brand_model.names
-    if isinstance(names, dict):
-        label = names.get(cls_id, str(cls_id))
-    else:
-        label = names[cls_id] if 0 <= cls_id < len(names) else str(cls_id)
-    return str(label), score, annotated
+    label = _cls_name(names, cls_id)
+    return str(label), score, result
 
 
 def predict_car_model(frame_bgr, car_model, conf: float = 0.25, cls_imgsz: int = 224, det_imgsz: int = 960):
@@ -241,21 +334,17 @@ def predict_car_model(frame_bgr, car_model, conf: float = 0.25, cls_imgsz: int =
     else:
         result = car_model.predict(source=frame_bgr, conf=conf, imgsz=det_imgsz, verbose=False)[0]
 
-    annotated = result.plot()
     probs = getattr(result, "probs", None)
     if probs is not None:
         idx = int(probs.top1)
         score = float(probs.top1conf)
         names = car_model.names
-        if isinstance(names, dict):
-            label = names.get(idx, str(idx))
-        else:
-            label = names[idx] if 0 <= idx < len(names) else str(idx)
-        return str(label), score, annotated
+        label = _cls_name(names, idx)
+        return str(label), score, result
 
     boxes = result.boxes
     if boxes is None or len(boxes) == 0:
-        return "", 0.0, annotated
+        return "", 0.0, result
 
     confs = boxes.conf.cpu().numpy()
     best_i = int(np.argmax(confs))
@@ -263,11 +352,8 @@ def predict_car_model(frame_bgr, car_model, conf: float = 0.25, cls_imgsz: int =
     score = float(confs[best_i])
 
     names = car_model.names
-    if isinstance(names, dict):
-        label = names.get(cls_id, str(cls_id))
-    else:
-        label = names[cls_id] if 0 <= cls_id < len(names) else str(cls_id)
-    return str(label), score, annotated
+    label = _cls_name(names, cls_id)
+    return str(label), score, result
 
 
 _RCARD_BOX = (
@@ -463,21 +549,35 @@ if img_file:
     if frame is None:
         st.error("Failed to read image.")
     else:
-        result = plate_model.predict(source=frame, conf=plate_conf, imgsz=imgsz, verbose=False)[0]
-        crop, _, _, annotated_plate = get_best_plate_crop(frame, result)
+        plate_result = plate_model.predict(source=frame, conf=plate_conf, imgsz=imgsz, verbose=False)[0]
+        crop, _, _ = get_best_plate_crop(frame, plate_result)
 
         brand_use_conf = max(0.2, det_conf)
-        brand_label, brand_score, im_brand = "", 0.0, None
+        brand_label, brand_score = "", 0.0
+        brand_result = None
         if brand_model is not None:
-            brand_label, brand_score, im_brand = detect_car_brand(
+            brand_label, brand_score, brand_result = detect_car_brand(
                 frame, brand_model, conf=brand_use_conf, imgsz=imgsz
             )
 
-        car_label, car_score, im_car = "", 0.0, None
+        car_label, car_score = "", 0.0
+        car_result = None
         if car_model is not None:
-            car_label, car_score, im_car = predict_car_model(
+            car_label, car_score, car_result = predict_car_model(
                 frame, car_model, conf=brand_use_conf, cls_imgsz=car_cls_imgsz, det_imgsz=imgsz
             )
+
+        combined_det = draw_combined_detection_plot(
+            frame,
+            plate_result,
+            brand_result,
+            car_result,
+            plate_model,
+            brand_model,
+            car_model,
+            car_label,
+            car_score,
+        )
 
         plate_txt = run_ocr_stable(crop, ocr_engine) if crop is not None else ""
 
@@ -490,27 +590,18 @@ if img_file:
             st.sidebar.caption("Plate crop: none at this plate confidence.")
 
         st.subheader("Detections")
-        row1a, row1b = st.columns(2)
-        with row1a:
-            st.image(
-                annotated_plate[:, :, ::-1],
-                caption=f"Plate detection (plate_conf={plate_conf}, imgsz={imgsz})",
-                use_column_width=True,
-            )
-        with row1b:
-            if brand_model is not None:
-                st.image(im_brand[:, :, ::-1], caption="Brand detection", use_column_width=True)
-            else:
-                st.caption("Brand model not deployed (`models/carbrand/best.pt`).")
-
-        row2a, row2b = st.columns(2)
-        with row2a:
-            if car_model is not None:
-                st.image(im_car[:, :, ::-1], caption="Car model detection", use_column_width=True)
-            else:
-                st.caption("Car model not deployed (`models/carmodel/best.pt`).")
-        with row2b:
-            st.caption("Reserved")
+        st.image(
+            combined_det[:, :, ::-1],
+            caption=(
+                f"Combined: plate (plate_conf={plate_conf}, imgsz={imgsz}) + brand + model "
+                "(legend at bottom; classify model shows top banner)"
+            ),
+            use_column_width=True,
+        )
+        if brand_model is None:
+            st.caption("Brand head not loaded — only plate (+ model if loaded) drawn.")
+        if car_model is None:
+            st.caption("Car model head not loaded — only plate (+ brand if loaded) drawn.")
 
         render_results_section(
             crop,
