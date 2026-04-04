@@ -10,15 +10,14 @@ from ultralytics import YOLO
 # -----------------------------
 # Config
 # -----------------------------
-st.set_page_config(page_title="Car Plate Detection System Yolov8", layout="wide")
-st.title("Car Plate Detection System (Yolov8 + Brand + Car Model)")
+st.set_page_config(page_title="Car Plate + Brand (YOLOv8)", layout="wide")
+st.title("Car Plate Detection System (Yolov8 + Brand)")
 
 BASE_DIR = Path(__file__).resolve().parent
 MODELS_DIR = BASE_DIR / "models"
 
 PLATE_MODEL_PATH = MODELS_DIR / "carplate" / "best.pt"
 BRAND_MODEL_PATH = MODELS_DIR / "carbrand" / "best.pt"
-CAR_MODEL_PATH = MODELS_DIR / "carmodel" / "best.pt"
 
 PROJECT_OUT = BASE_DIR / "outputs"
 PROJECT_OUT.mkdir(exist_ok=True)
@@ -50,13 +49,6 @@ def load_brand_model():
     if not BRAND_MODEL_PATH.exists():
         return None
     return YOLO(str(BRAND_MODEL_PATH))
-
-
-@st.cache_resource
-def load_car_model():
-    if not CAR_MODEL_PATH.exists():
-        return None
-    return YOLO(str(CAR_MODEL_PATH))
 
 
 @st.cache_resource
@@ -257,20 +249,15 @@ def draw_combined_detection_plot(
     frame_bgr: np.ndarray,
     plate_result,
     brand_result,
-    car_result,
     plate_model,
     brand_model,
-    car_model,
-    car_label: str,
-    car_score: float,
 ) -> np.ndarray:
-    """Single BGR image: plate + brand + model overlays (boxes and/or classify banner)."""
+    """Single BGR image: plate + brand overlays."""
     canvas = frame_bgr.copy()
-    h, w = canvas.shape[:2]
+    h = canvas.shape[0]
 
     COL_PLATE = (0, 215, 255)  # BGR amber / plate
     COL_BRAND = (255, 128, 0)  # BGR brand accent
-    COL_MODEL = (80, 220, 80)  # BGR model / green
 
     if plate_result is not None and plate_result.boxes is not None:
         _draw_detection_boxes_bgr(canvas, plate_result.boxes, plate_model.names, COL_PLATE, "plate ")
@@ -278,26 +265,7 @@ def draw_combined_detection_plot(
     if brand_model is not None and brand_result is not None and brand_result.boxes is not None:
         _draw_detection_boxes_bgr(canvas, brand_result.boxes, brand_model.names, COL_BRAND, "brand ")
 
-    if car_model is not None and car_result is not None:
-        probs = getattr(car_result, "probs", None)
-        if probs is not None and car_label:
-            banner = f"model {car_label} {car_score:.2f}"
-            tw = min(int(cv2.getTextSize(banner, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)[0][0]) + 20, w - 10)
-            cv2.rectangle(canvas, (6, 6), (6 + tw, 42), COL_MODEL, -1)
-            cv2.putText(
-                canvas,
-                banner,
-                (14, 32),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (255, 255, 255),
-                2,
-                cv2.LINE_AA,
-            )
-        elif car_result.boxes is not None:
-            _draw_detection_boxes_bgr(canvas, car_result.boxes, car_model.names, COL_MODEL, "model ")
-
-    leg = "Plate (amber)  Brand (orange)  Model (green)"
+    leg = "Plate (amber)  Brand (orange)"
     cv2.putText(
         canvas,
         leg,
@@ -323,35 +291,6 @@ def detect_car_brand(frame_bgr, brand_model, conf: float = 0.25, imgsz: int = 96
     score = float(confs[best_i])
 
     names = brand_model.names
-    label = _cls_name(names, cls_id)
-    return str(label), score, result
-
-
-def predict_car_model(frame_bgr, car_model, conf: float = 0.25, cls_imgsz: int = 224, det_imgsz: int = 960):
-    task = getattr(car_model, "task", None)
-    if task == "classify":
-        result = car_model.predict(source=frame_bgr, imgsz=cls_imgsz, verbose=False)[0]
-    else:
-        result = car_model.predict(source=frame_bgr, conf=conf, imgsz=det_imgsz, verbose=False)[0]
-
-    probs = getattr(result, "probs", None)
-    if probs is not None:
-        idx = int(probs.top1)
-        score = float(probs.top1conf)
-        names = car_model.names
-        label = _cls_name(names, idx)
-        return str(label), score, result
-
-    boxes = result.boxes
-    if boxes is None or len(boxes) == 0:
-        return "", 0.0, result
-
-    confs = boxes.conf.cpu().numpy()
-    best_i = int(np.argmax(confs))
-    cls_id = int(boxes.cls[best_i].cpu().numpy())
-    score = float(confs[best_i])
-
-    names = car_model.names
     label = _cls_name(names, cls_id)
     return str(label), score, result
 
@@ -382,13 +321,13 @@ def _result_pill(kind: str, text: str) -> str:
     )
 
 
-def _brand_or_model_card_html(
-    title: str,
+def _brand_card_html(
     deployed: bool,
     label: str,
     score: float,
     weights_hint: str = "",
 ) -> str:
+    title = "Car brand"
     head = _result_card_title(title)
     if not deployed:
         pill = _result_pill("muted", "Unavailable")
@@ -422,15 +361,11 @@ def _brand_or_model_card_html(
 
 
 def render_results_section(
-    crop_bgr,
+    has_plate_crop: bool,
     plate_txt: str,
     brand_label: str,
     brand_score: float,
-    car_label: str,
-    car_score: float,
     brand_model,
-    car_model,
-    prefix: str = "Image",
 ):
     st.markdown("### Results")
     st.markdown(
@@ -438,29 +373,23 @@ def render_results_section(
         unsafe_allow_html=True,
     )
 
-    plate_row_min_h = "min-height:280px;"
+    plate_card_min_h = "min-height:160px;"
+    col_plate, col_brand = st.columns(2, gap="large")
 
-    if crop_bgr is not None:
-        img_col, detail_col = st.columns(2, gap="large")
-        with img_col:
-            st.image(
-                crop_bgr[:, :, ::-1],
-                caption=f"{prefix} · plate crop",
-                use_column_width=True,
-            )
-        with detail_col:
+    with col_plate:
+        if has_plate_crop:
             if plate_txt and is_valid_plate(plate_txt):
                 pill = _result_pill("ok", "Valid MY pattern")
                 sub = "OCR matches the general Malaysia plate pattern."
             elif plate_txt:
                 pill = _result_pill("warn", "Review format")
-                sub = "Raw OCR does not match the default pattern — verify on the crop."
+                sub = "Raw OCR does not match the default pattern — verify visually if needed."
             else:
                 pill = _result_pill("warn", "No OCR text")
-                sub = "No reliable characters were read from the crop."
+                sub = "No reliable characters were read from the detected plate region."
             val = html.escape(plate_txt) if plate_txt else "—"
             st.markdown(
-                f'<div style="{_RCARD_BOX} {plate_row_min_h} display:flex;flex-direction:column;justify-content:center;">'
+                f'<div style="{_RCARD_BOX} {plate_card_min_h} display:flex;flex-direction:column;justify-content:center;">'
                 f"{_result_card_title('License plate · OCR')}"
                 f'<div style="margin-bottom:12px;">{pill}</div>'
                 f'<p style="margin:6px 0 10px 0;font-size:1.85rem;font-weight:800;font-family:ui-monospace,Consolas,monospace;'
@@ -470,38 +399,24 @@ def render_results_section(
                 f"</div>",
                 unsafe_allow_html=True,
             )
-    else:
-        st.markdown(
-            f'<div style="{_RCARD_BOX} min-height:100px;">'
-            f"{_result_card_title('License plate')}"
-            f'<div style="margin-bottom:10px;">{_result_pill("warn", "Not detected")}</div>'
-            f'<p style="margin:0;font-size:15px;line-height:1.5;color:rgba(128,132,149,0.9);">'
-            "No plate region was found on this upload.</p>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
+        else:
+            st.markdown(
+                f'<div style="{_RCARD_BOX} min-height:100px;">'
+                f"{_result_card_title('License plate')}"
+                f'<div style="margin-bottom:10px;">{_result_pill("warn", "Not detected")}</div>'
+                f'<p style="margin:0;font-size:15px;line-height:1.5;color:rgba(128,132,149,0.9);">'
+                "No plate region was found on this upload.</p>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
 
-    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
-    row_b, row_m = st.columns(2, gap="large")
-    with row_b:
+    with col_brand:
         st.markdown(
-            _brand_or_model_card_html(
-                "Car brand",
+            _brand_card_html(
                 brand_model is not None,
                 brand_label,
                 brand_score,
                 weights_hint="models/carbrand/best.pt",
-            ),
-            unsafe_allow_html=True,
-        )
-    with row_m:
-        st.markdown(
-            _brand_or_model_card_html(
-                "Car model",
-                car_model is not None,
-                car_label,
-                car_score,
-                weights_hint="models/carmodel/best.pt",
             ),
             unsafe_allow_html=True,
         )
@@ -513,7 +428,6 @@ def render_results_section(
 try:
     plate_model = load_plate_model()
     brand_model = load_brand_model()
-    car_model = load_car_model()
     ocr_engine = load_ocr()
 except Exception as e:
     st.error(f"Model/OCR load failed: {e}")
@@ -529,15 +443,14 @@ plate_conf = st.sidebar.slider(
     help="YOLO threshold for the license-plate model only. Lower keeps more plate boxes (feeds OCR).",
 )
 det_conf = st.sidebar.slider(
-    "Brand / model confidence",
+    "Brand detection confidence",
     0.0,
     1.0,
     0.25,
     0.05,
-    help="YOLO threshold for car brand and car model heads (not used for OCR).",
+    help="YOLO threshold for the car brand model only (not used for OCR).",
 )
 imgsz = st.sidebar.selectbox("Image Size (imgsz)", [320, 480, 640, 960, 1280], index=4)
-car_cls_imgsz = st.sidebar.selectbox("Car model imgsz (classify)", [224, 320, 384, 448], index=0)
 
 st.subheader("Upload an image")
 img_file = st.file_uploader("Choose an image", type=["jpg", "jpeg", "png"], key="img_uploader")
@@ -560,23 +473,12 @@ if img_file:
                 frame, brand_model, conf=brand_use_conf, imgsz=imgsz
             )
 
-        car_label, car_score = "", 0.0
-        car_result = None
-        if car_model is not None:
-            car_label, car_score, car_result = predict_car_model(
-                frame, car_model, conf=brand_use_conf, cls_imgsz=car_cls_imgsz, det_imgsz=imgsz
-            )
-
         combined_det = draw_combined_detection_plot(
             frame,
             plate_result,
             brand_result,
-            car_result,
             plate_model,
             brand_model,
-            car_model,
-            car_label,
-            car_score,
         )
 
         plate_txt = run_ocr_stable(crop, ocr_engine) if crop is not None else ""
@@ -592,25 +494,16 @@ if img_file:
         st.subheader("Detections")
         st.image(
             combined_det[:, :, ::-1],
-            caption=(
-                f"Combined: plate (plate_conf={plate_conf}, imgsz={imgsz}) + brand + model "
-                "(legend at bottom; classify model shows top banner)"
-            ),
+            caption=f"Combined: plate + brand (plate_conf={plate_conf}, imgsz={imgsz}; legend at bottom)",
             use_column_width=True,
         )
         if brand_model is None:
-            st.caption("Brand head not loaded — only plate (+ model if loaded) drawn.")
-        if car_model is None:
-            st.caption("Car model head not loaded — only plate (+ brand if loaded) drawn.")
+            st.caption("Brand head not loaded — only plate boxes are drawn.")
 
         render_results_section(
-            crop,
+            crop is not None,
             plate_txt,
             brand_label,
             brand_score,
-            car_label,
-            car_score,
             brand_model,
-            car_model,
-            prefix="Image",
         )
