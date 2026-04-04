@@ -155,54 +155,100 @@ def _extract_padded_crop(frame_bgr, x1, y1, x2, y2, fh, fw, pad_x_frac: float, p
     return crop, (x1p, y1p, x2p, y2p)
 
 
-def get_best_plate_crop(frame_bgr: np.ndarray, result):
-    boxes = result.boxes
+def _crop_for_single_plate_box(frame_bgr, x1, y1, x2, y2, fh, fw):
+    """Padded crop for one plate box (same padding strategy as former single-plate path)."""
+    crop, _ = _extract_padded_crop(frame_bgr, x1, y1, x2, y2, fh, fw, _PAD_X_STD, _PAD_Y_STD)
+    if crop is not None:
+        ch, cw = crop.shape[:2]
+        if cw >= MIN_PLATE_CROP_W and ch >= MIN_PLATE_CROP_H:
+            return crop
+    crop, _ = _extract_padded_crop(frame_bgr, x1, y1, x2, y2, fh, fw, _PAD_X_EXPAND, _PAD_Y_EXPAND)
+    if crop is not None:
+        ch, cw = crop.shape[:2]
+        if cw >= MIN_PLATE_CROP_W and ch >= MIN_PLATE_CROP_H:
+            return crop
+    crop, _ = _extract_padded_crop(frame_bgr, x1, y1, x2, y2, fh, fw, _PAD_X_STD, _PAD_Y_STD)
+    return crop
 
+
+def enumerate_plates_left_to_right(frame_bgr: np.ndarray, plate_result) -> list:
+    """All plate boxes sorted by horizontal center (left → right)."""
+    boxes = plate_result.boxes
     if boxes is None or len(boxes) == 0:
-        return None, None, 0.0
-
+        return []
     fh, fw = frame_bgr.shape[:2]
-    scored = []
-    for b in boxes:
-        xyxy = b.xyxy[0].cpu().numpy().astype(int)
-        det_conf = float(b.conf[0].cpu().numpy())
-        x1, y1, x2, y2 = [int(v) for v in xyxy.tolist()]
-        bw = max(0, x2 - x1)
-        bh = max(0, y2 - y1)
-        area = bw * bh
-        if area <= 0:
+    xyxy_all = boxes.xyxy.cpu().numpy()
+    confs = boxes.conf.cpu().numpy()
+    rows = []
+    for i in range(len(boxes)):
+        x1, y1, x2, y2 = [int(v) for v in xyxy_all[i]]
+        if x2 <= x1 or y2 <= y1:
             continue
-        score = det_conf * np.sqrt(area)
-        scored.append((score, x1, y1, x2, y2))
+        xc = 0.5 * (x1 + x2)
+        crop = _crop_for_single_plate_box(frame_bgr, x1, y1, x2, y2, fh, fw)
+        rows.append(
+            {
+                "x_center": xc,
+                "xyxy": (x1, y1, x2, y2),
+                "crop": crop,
+                "conf": float(confs[i]),
+            }
+        )
+    rows.sort(key=lambda r: r["x_center"])
+    return rows
 
-    if not scored:
-        return None, None, 0.0
 
-    scored.sort(key=lambda t: t[0], reverse=True)
+def extract_brands_left_to_right(brand_result, brand_model) -> list:
+    """All brand boxes sorted by horizontal center (left → right)."""
+    if brand_result is None or brand_result.boxes is None or len(brand_result.boxes) == 0:
+        return []
+    boxes = brand_result.boxes
+    xyxy = boxes.xyxy.cpu().numpy()
+    confs = boxes.conf.cpu().numpy()
+    clss = boxes.cls.cpu().numpy().astype(int)
+    names = brand_model.names
+    rows = []
+    for i in range(len(boxes)):
+        x1, y1, x2, y2 = [float(v) for v in xyxy[i]]
+        xc = 0.5 * (x1 + x2)
+        cid = int(clss[i])
+        rows.append(
+            {
+                "x_center": xc,
+                "label": _cls_name(names, cid),
+                "score": float(confs[i]),
+                "xyxy": (int(x1), int(y1), int(x2), int(y2)),
+            }
+        )
+    rows.sort(key=lambda r: r["x_center"])
+    return rows
 
-    def first_meeting_min(pxf, pyf):
-        for score, x1, y1, x2, y2 in scored:
-            crop, box = _extract_padded_crop(frame_bgr, x1, y1, x2, y2, fh, fw, pxf, pyf)
-            if crop is None:
+
+def pair_plates_with_brands(plates_ltr: list, brands_ltr: list) -> list:
+    """
+    One row per plate (left → right). Each plate gets at most one brand:
+    greedy match by nearest x_center among unused brands.
+    """
+    if not plates_ltr:
+        return []
+    used = set()
+    paired = []
+    for p in plates_ltr:
+        best_j = None
+        best_d = 1e18
+        for j, b in enumerate(brands_ltr):
+            if j in used:
                 continue
-            ch, cw = crop.shape[:2]
-            if cw >= MIN_PLATE_CROP_W and ch >= MIN_PLATE_CROP_H:
-                return crop, box, score
-        return None, None, None
-
-    crop, box, score = first_meeting_min(_PAD_X_STD, _PAD_Y_STD)
-    if crop is not None:
-        return crop, box, score
-
-    crop, box, score = first_meeting_min(_PAD_X_EXPAND, _PAD_Y_EXPAND)
-    if crop is not None:
-        return crop, box, score
-
-    top_score, x1, y1, x2, y2 = scored[0]
-    crop, box = _extract_padded_crop(frame_bgr, x1, y1, x2, y2, fh, fw, _PAD_X_STD, _PAD_Y_STD)
-    if crop is None:
-        return None, None, 0.0
-    return crop, box, top_score
+            d = abs(p["x_center"] - b["x_center"])
+            if d < best_d:
+                best_d = d
+                best_j = j
+        brand = None
+        if best_j is not None:
+            used.add(best_j)
+            brand = brands_ltr[best_j]
+        paired.append({"plate": p, "brand": brand})
+    return paired
 
 
 def _cls_name(names, cls_id: int) -> str:
@@ -245,14 +291,32 @@ def _draw_detection_boxes_bgr(
         )
 
 
+def _draw_plate_car_index_badges(im_bgr: np.ndarray, plates_ltr: list) -> None:
+    """Draw 1, 2, … above each plate (left → right) to match Results · Car N."""
+    col = (0, 215, 255)
+    for k, p in enumerate(plates_ltr, start=1):
+        x1, y1, _, _ = p["xyxy"]
+        cv2.putText(
+            im_bgr,
+            str(k),
+            (x1, max(y1 - 6, 24)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.95,
+            col,
+            2,
+            cv2.LINE_AA,
+        )
+
+
 def draw_combined_detection_plot(
     frame_bgr: np.ndarray,
     plate_result,
     brand_result,
     plate_model,
     brand_model,
+    plates_ltr=None,
 ) -> np.ndarray:
-    """Single BGR image: plate + brand overlays."""
+    """Single BGR image: plate + brand overlays; optional Car 1,2,… indices on plates."""
     canvas = frame_bgr.copy()
     h = canvas.shape[0]
 
@@ -265,7 +329,10 @@ def draw_combined_detection_plot(
     if brand_model is not None and brand_result is not None and brand_result.boxes is not None:
         _draw_detection_boxes_bgr(canvas, brand_result.boxes, brand_model.names, COL_BRAND, "brand ")
 
-    leg = "Plate (amber)  Brand (orange)"
+    if plates_ltr:
+        _draw_plate_car_index_badges(canvas, plates_ltr)
+
+    leg = "Plate (amber)  Brand (orange)  ·  numbers = Car 1,2,… (left→right)"
     cv2.putText(
         canvas,
         leg,
@@ -277,22 +344,6 @@ def draw_combined_detection_plot(
         cv2.LINE_AA,
     )
     return canvas
-
-
-def detect_car_brand(frame_bgr, brand_model, conf: float = 0.25, imgsz: int = 960):
-    result = brand_model.predict(source=frame_bgr, conf=conf, imgsz=imgsz, verbose=False)[0]
-    boxes = result.boxes
-    if boxes is None or len(boxes) == 0:
-        return "", 0.0, result
-
-    confs = boxes.conf.cpu().numpy()
-    best_i = int(np.argmax(confs))
-    cls_id = int(boxes.cls[best_i].cpu().numpy())
-    score = float(confs[best_i])
-
-    names = brand_model.names
-    label = _cls_name(names, cls_id)
-    return str(label), score, result
 
 
 _RCARD_BOX = (
@@ -318,6 +369,44 @@ def _result_pill(kind: str, text: str) -> str:
     return (
         f'<span style="display:inline-block;padding:5px 14px;border-radius:999px;'
         f'background:{bg};color:{fg};font-size:12px;font-weight:600;">{html.escape(text)}</span>'
+    )
+
+
+def _plate_ocr_card_html(plate_txt: str, has_crop: bool) -> str:
+    if not has_crop:
+        body = (
+            "<p style='margin:0;font-size:14px;color:rgba(128,132,149,0.88);'>"
+            "Could not build a crop for OCR (box too small or invalid).</p>"
+        )
+        pill = _result_pill("warn", "No crop")
+        val = "—"
+        return (
+            f'<div style="{_RCARD_BOX} min-height:140px;">'
+            f"{_result_card_title('License plate · OCR')}"
+            f'<div style="margin-bottom:10px;">{pill}</div>'
+            f'<p style="margin:6px 0 8px 0;font-size:1.65rem;font-weight:800;font-family:ui-monospace,Consolas,monospace;">'
+            f"{html.escape(val)}</p>{body}</div>"
+        )
+
+    if plate_txt and is_valid_plate(plate_txt):
+        pill = _result_pill("ok", "Valid MY pattern")
+        sub = "OCR matches the general Malaysia plate pattern."
+    elif plate_txt:
+        pill = _result_pill("warn", "Review format")
+        sub = "Raw OCR does not match the default pattern — verify visually if needed."
+    else:
+        pill = _result_pill("warn", "No OCR text")
+        sub = "No reliable characters were read from the detected plate region."
+    val = html.escape(plate_txt) if plate_txt else "—"
+    return (
+        f'<div style="{_RCARD_BOX} min-height:140px;">'
+        f"{_result_card_title('License plate · OCR')}"
+        f'<div style="margin-bottom:10px;">{pill}</div>'
+        f'<p style="margin:6px 0 8px 0;font-size:1.85rem;font-weight:800;font-family:ui-monospace,Consolas,monospace;'
+        f'letter-spacing:0.1em;line-height:1.2;">{val}</p>'
+        f'<p style="margin:0;font-size:13px;line-height:1.45;color:rgba(128,132,149,0.88);">'
+        f"{html.escape(sub)}</p>"
+        f"</div>"
     )
 
 
@@ -360,66 +449,51 @@ def _brand_card_html(
     )
 
 
-def render_results_section(
-    has_plate_crop: bool,
-    plate_txt: str,
-    brand_label: str,
-    brand_score: float,
-    brand_model,
-):
+def render_results_section(paired_rows: list, brand_model):
+    """paired_rows: from pair_plates_with_brands, each with plate_txt set on plate dict."""
     st.markdown("### Results")
     st.markdown(
         "<hr style='margin:0.4rem 0 1.2rem 0;border:none;border-top:1px solid rgba(128,132,149,0.2);' />",
         unsafe_allow_html=True,
     )
 
-    plate_card_min_h = "min-height:160px;"
-    col_plate, col_brand = st.columns(2, gap="large")
-
-    with col_plate:
-        if has_plate_crop:
-            if plate_txt and is_valid_plate(plate_txt):
-                pill = _result_pill("ok", "Valid MY pattern")
-                sub = "OCR matches the general Malaysia plate pattern."
-            elif plate_txt:
-                pill = _result_pill("warn", "Review format")
-                sub = "Raw OCR does not match the default pattern — verify visually if needed."
-            else:
-                pill = _result_pill("warn", "No OCR text")
-                sub = "No reliable characters were read from the detected plate region."
-            val = html.escape(plate_txt) if plate_txt else "—"
-            st.markdown(
-                f'<div style="{_RCARD_BOX} {plate_card_min_h} display:flex;flex-direction:column;justify-content:center;">'
-                f"{_result_card_title('License plate · OCR')}"
-                f'<div style="margin-bottom:12px;">{pill}</div>'
-                f'<p style="margin:6px 0 10px 0;font-size:1.85rem;font-weight:800;font-family:ui-monospace,Consolas,monospace;'
-                f'letter-spacing:0.1em;line-height:1.2;">{val}</p>'
-                f'<p style="margin:0;font-size:13px;line-height:1.45;color:rgba(128,132,149,0.88);">'
-                f"{html.escape(sub)}</p>"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-        else:
-            st.markdown(
-                f'<div style="{_RCARD_BOX} min-height:100px;">'
-                f"{_result_card_title('License plate')}"
-                f'<div style="margin-bottom:10px;">{_result_pill("warn", "Not detected")}</div>'
-                f'<p style="margin:0;font-size:15px;line-height:1.5;color:rgba(128,132,149,0.9);">'
-                "No plate region was found on this upload.</p>"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
-
-    with col_brand:
+    if not paired_rows:
         st.markdown(
-            _brand_card_html(
-                brand_model is not None,
-                brand_label,
-                brand_score,
-                weights_hint="models/carbrand/best.pt",
-            ),
+            f'<div style="{_RCARD_BOX} min-height:100px;">'
+            f"{_result_card_title('License plate')}"
+            f'<div style="margin-bottom:10px;">{_result_pill("warn", "Not detected")}</div>'
+            f'<p style="margin:0;font-size:15px;line-height:1.5;color:rgba(128,132,149,0.9);">'
+            "No plate regions were found on this upload.</p>"
+            f"</div>",
             unsafe_allow_html=True,
         )
+        return
+
+    st.caption("Cars are ordered left → right by plate position (same as numbers on the detection image).")
+
+    for i, row in enumerate(paired_rows, start=1):
+        st.markdown(f"#### Car {i}")
+        plate = row["plate"]
+        brand = row["brand"]
+        plate_txt = plate.get("plate_txt", "")
+        has_crop = plate.get("crop") is not None
+
+        col_p, col_b = st.columns(2, gap="large")
+        with col_p:
+            st.markdown(_plate_ocr_card_html(plate_txt, has_crop), unsafe_allow_html=True)
+        with col_b:
+            bl = brand["label"] if brand else ""
+            bs = brand["score"] if brand else 0.0
+            st.markdown(
+                _brand_card_html(
+                    brand_model is not None,
+                    bl,
+                    bs,
+                    weights_hint="models/carbrand/best.pt",
+                ),
+                unsafe_allow_html=True,
+            )
+        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
 
 
 # -----------------------------
@@ -463,15 +537,24 @@ if img_file:
         st.error("Failed to read image.")
     else:
         plate_result = plate_model.predict(source=frame, conf=plate_conf, imgsz=imgsz, verbose=False)[0]
-        crop, _, _ = get_best_plate_crop(frame, plate_result)
+        plates_ltr = enumerate_plates_left_to_right(frame, plate_result)
+        for p in plates_ltr:
+            cr = p.get("crop")
+            p["plate_txt"] = run_ocr_stable(cr, ocr_engine) if cr is not None else ""
 
         brand_use_conf = max(0.2, det_conf)
-        brand_label, brand_score = "", 0.0
         brand_result = None
         if brand_model is not None:
-            brand_label, brand_score, brand_result = detect_car_brand(
-                frame, brand_model, conf=brand_use_conf, imgsz=imgsz
-            )
+            brand_result = brand_model.predict(
+                source=frame, conf=brand_use_conf, imgsz=imgsz, verbose=False
+            )[0]
+
+        brands_ltr = (
+            extract_brands_left_to_right(brand_result, brand_model)
+            if brand_model is not None and brand_result is not None
+            else []
+        )
+        paired_rows = pair_plates_with_brands(plates_ltr, brands_ltr)
 
         combined_det = draw_combined_detection_plot(
             frame,
@@ -479,17 +562,16 @@ if img_file:
             brand_result,
             plate_model,
             brand_model,
+            plates_ltr=plates_ltr,
         )
 
-        plate_txt = run_ocr_stable(crop, ocr_engine) if crop is not None else ""
-
-        if crop is not None:
-            ch, cw = crop.shape[:2]
+        n_plates = len(plates_ltr)
+        if n_plates:
             st.sidebar.caption(
-                f"Plate crop: {cw}×{ch} px (OCR min {MIN_PLATE_CROP_W}×{MIN_PLATE_CROP_H})"
+                f"{n_plates} plate(s) detected (left→right). OCR min crop {MIN_PLATE_CROP_W}×{MIN_PLATE_CROP_H} px."
             )
         else:
-            st.sidebar.caption("Plate crop: none at this plate confidence.")
+            st.sidebar.caption("No plates at this plate confidence.")
 
         st.subheader("Detections")
         st.image(
@@ -500,10 +582,4 @@ if img_file:
         if brand_model is None:
             st.caption("Brand head not loaded — only plate boxes are drawn.")
 
-        render_results_section(
-            crop is not None,
-            plate_txt,
-            brand_label,
-            brand_score,
-            brand_model,
-        )
+        render_results_section(paired_rows, brand_model)
