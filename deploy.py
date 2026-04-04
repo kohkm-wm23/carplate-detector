@@ -206,19 +206,24 @@ def _crop_for_single_plate_box(frame_bgr, x1, y1, x2, y2, fh, fw):
     return crop
 
 
-def enumerate_plates_left_to_right(frame_bgr: np.ndarray, plate_result) -> list:
-    """All plate boxes sorted by horizontal center (left → right)."""
+def enumerate_plates_left_to_right(frame_bgr: np.ndarray, plate_result, max_cars: int) -> tuple:
+    """
+    Plate detections: keep up to max_cars with largest bbox area (drops tiny / distant plates),
+    then sort left → right. Returns (plates_ltr, n_detected_raw).
+    """
     boxes = plate_result.boxes
     if boxes is None or len(boxes) == 0:
-        return []
+        return [], 0
     fh, fw = frame_bgr.shape[:2]
     xyxy_all = boxes.xyxy.cpu().numpy()
     confs = boxes.conf.cpu().numpy()
+    clss = boxes.cls.cpu().numpy().astype(int)
     rows = []
     for i in range(len(boxes)):
         x1, y1, x2, y2 = [int(v) for v in xyxy_all[i]]
         if x2 <= x1 or y2 <= y1:
             continue
+        area = float((x2 - x1) * (y2 - y1))
         xc = 0.5 * (x1 + x2)
         crop = _crop_for_single_plate_box(frame_bgr, x1, y1, x2, y2, fh, fw)
         rows.append(
@@ -227,10 +232,17 @@ def enumerate_plates_left_to_right(frame_bgr: np.ndarray, plate_result) -> list:
                 "xyxy": (x1, y1, x2, y2),
                 "crop": crop,
                 "conf": float(confs[i]),
+                "area": area,
+                "cls_id": int(clss[i]),
             }
         )
+    n_raw = len(rows)
+    mc = max(1, int(max_cars))
+    if len(rows) > mc:
+        rows.sort(key=lambda r: r["area"], reverse=True)
+        rows = rows[:mc]
     rows.sort(key=lambda r: r["x_center"])
-    return rows
+    return rows, n_raw
 
 
 def extract_brands_left_to_right(brand_result, brand_model) -> list:
@@ -326,6 +338,29 @@ def _draw_detection_boxes_bgr(
         )
 
 
+def _draw_plate_rows_bgr(im_bgr: np.ndarray, plates_ltr: list, names) -> None:
+    """Draw only the plate boxes we kept (after max-cars filter)."""
+    col = (0, 215, 255)
+    for p in plates_ltr:
+        x1, y1, x2, y2 = p["xyxy"]
+        cf = p["conf"]
+        cid = p.get("cls_id", 0)
+        lab = _cls_name(names, cid)
+        label = f"plate {lab} {cf:.2f}"
+        cv2.rectangle(im_bgr, (x1, y1), (x2, y2), col, 2)
+        y_txt = max(y1 - 6, 18)
+        cv2.putText(
+            im_bgr,
+            label,
+            (x1, y_txt),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            col,
+            2,
+            cv2.LINE_AA,
+        )
+
+
 def _draw_plate_car_index_badges(im_bgr: np.ndarray, plates_ltr: list) -> None:
     """Draw 1, 2, … above each plate (left → right) to match Results · Car N."""
     col = (0, 215, 255)
@@ -345,21 +380,19 @@ def _draw_plate_car_index_badges(im_bgr: np.ndarray, plates_ltr: list) -> None:
 
 def draw_combined_detection_plot(
     frame_bgr: np.ndarray,
-    plate_result,
     brand_result,
     plate_model,
     brand_model,
     plates_ltr=None,
 ) -> np.ndarray:
-    """Single BGR image: plate + brand overlays; optional Car 1,2,… indices on plates."""
+    """Single BGR image: kept plate boxes + brand overlays; Car 1,2,… on plates."""
     canvas = frame_bgr.copy()
     h = canvas.shape[0]
 
-    COL_PLATE = (0, 215, 255)  # BGR amber / plate
     COL_BRAND = (255, 128, 0)  # BGR brand accent
 
-    if plate_result is not None and plate_result.boxes is not None:
-        _draw_detection_boxes_bgr(canvas, plate_result.boxes, plate_model.names, COL_PLATE, "plate ")
+    if plates_ltr:
+        _draw_plate_rows_bgr(canvas, plates_ltr, plate_model.names)
 
     if brand_model is not None and brand_result is not None and brand_result.boxes is not None:
         _draw_detection_boxes_bgr(canvas, brand_result.boxes, brand_model.names, COL_BRAND, "brand ")
@@ -367,7 +400,7 @@ def draw_combined_detection_plot(
     if plates_ltr:
         _draw_plate_car_index_badges(canvas, plates_ltr)
 
-    leg = "Plate (amber)  Brand (orange)  ·  numbers = Car 1,2,… (left→right)"
+    leg = "Plate (amber) = kept only  ·  Brand (orange)  ·  numbers = Car 1,2,… (left→right)"
     cv2.putText(
         canvas,
         leg,
@@ -560,6 +593,14 @@ det_conf = st.sidebar.slider(
     help="YOLO threshold for the car brand model only (not used for OCR).",
 )
 imgsz = st.sidebar.selectbox("Image Size (imgsz)", [320, 480, 640, 960, 1280], index=4)
+max_cars = st.sidebar.number_input(
+    "Max cars (plates)",
+    min_value=1,
+    max_value=15,
+    value=5,
+    step=1,
+    help="Uses the largest plate boxes in the frame (drops smaller / usually farther cars), then orders left→right.",
+)
 
 st.subheader("Upload an image")
 img_file = st.file_uploader(
@@ -583,7 +624,7 @@ if img_file:
             st.error("Failed to read image.")
     else:
         plate_result = plate_model.predict(source=frame, conf=plate_conf, imgsz=imgsz, verbose=False)[0]
-        plates_ltr = enumerate_plates_left_to_right(frame, plate_result)
+        plates_ltr, n_plates_raw = enumerate_plates_left_to_right(frame, plate_result, max_cars)
         for p in plates_ltr:
             cr = p.get("crop")
             p["plate_txt"] = run_ocr_stable(cr, ocr_engine) if cr is not None else ""
@@ -604,7 +645,6 @@ if img_file:
 
         combined_det = draw_combined_detection_plot(
             frame,
-            plate_result,
             brand_result,
             plate_model,
             brand_model,
@@ -612,9 +652,12 @@ if img_file:
         )
 
         n_plates = len(plates_ltr)
-        if n_plates:
+        if n_plates_raw:
+            kept = f"{n_plates} kept" + (
+                f" of {n_plates_raw} detected" if n_plates_raw != n_plates else ""
+            )
             st.sidebar.caption(
-                f"{n_plates} plate(s) detected (left→right). OCR min crop {MIN_PLATE_CROP_W}×{MIN_PLATE_CROP_H} px."
+                f"{kept} (left→right, max {max_cars}). OCR min crop {MIN_PLATE_CROP_W}×{MIN_PLATE_CROP_H} px."
             )
         else:
             st.sidebar.caption("No plates at this plate confidence.")
@@ -622,7 +665,10 @@ if img_file:
         st.subheader("Detections")
         st.image(
             combined_det[:, :, ::-1],
-            caption=f"Combined: plate + brand (plate_conf={plate_conf}, imgsz={imgsz}; legend at bottom)",
+            caption=(
+                f"Combined: plates kept (max {max_cars} by size) + brand · "
+                f"plate_conf={plate_conf}, imgsz={imgsz}"
+            ),
             use_column_width=True,
         )
         if brand_model is None:
