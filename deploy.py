@@ -597,7 +597,7 @@ max_cars = st.sidebar.number_input(
     "Max cars (plates)",
     min_value=1,
     max_value=15,
-    value=5,
+    value=2,
     step=1,
     help="Uses the largest plate boxes in the frame (drops smaller / usually farther cars), then orders left→right.",
 )
