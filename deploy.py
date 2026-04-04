@@ -1,4 +1,5 @@
 import html
+import io
 import re
 import cv2
 import numpy as np
@@ -6,6 +7,40 @@ import streamlit as st
 from paddleocr import PaddleOCR
 from pathlib import Path
 from ultralytics import YOLO
+
+_HEIF_OPENER_REGISTERED = False
+
+
+def _register_heif_opener():
+    global _HEIF_OPENER_REGISTERED
+    if _HEIF_OPENER_REGISTERED:
+        return
+    try:
+        import pillow_heif
+
+        pillow_heif.register_heif_opener()
+        _HEIF_OPENER_REGISTERED = True
+    except ImportError:
+        pass
+
+
+def decode_upload_to_bgr(uploaded_file) -> np.ndarray | None:
+    """JPEG/PNG via OpenCV; HEIC/HEIF via Pillow + pillow-heif (iPhone photos)."""
+    raw = uploaded_file.getvalue()
+    suffix = Path(uploaded_file.name or "").suffix.lower()
+    if suffix in (".heic", ".heif"):
+        _register_heif_opener()
+        try:
+            from PIL import Image
+
+            im = Image.open(io.BytesIO(raw))
+            rgb = im.convert("RGB")
+            arr = np.asarray(rgb)
+            return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+        except Exception:
+            return None
+    buf = np.asarray(bytearray(raw), dtype=np.uint8)
+    return cv2.imdecode(buf, cv2.IMREAD_COLOR)
 
 # -----------------------------
 # Config
@@ -527,14 +562,25 @@ det_conf = st.sidebar.slider(
 imgsz = st.sidebar.selectbox("Image Size (imgsz)", [320, 480, 640, 960, 1280], index=4)
 
 st.subheader("Upload an image")
-img_file = st.file_uploader("Choose an image", type=["jpg", "jpeg", "png"], key="img_uploader")
+img_file = st.file_uploader(
+    "Choose an image",
+    type=["jpg", "jpeg", "png", "heic", "heif"],
+    key="img_uploader",
+    help="iPhone photos: use .heic / .heif or convert to JPEG in Photos before upload.",
+)
 
 if img_file:
-    file_bytes = np.asarray(bytearray(img_file.getvalue()), dtype=np.uint8)
-    frame = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+    frame = decode_upload_to_bgr(img_file)
 
     if frame is None:
-        st.error("Failed to read image.")
+        suf = Path(img_file.name or "").suffix.lower()
+        if suf in (".heic", ".heif"):
+            st.error(
+                "Could not read this HEIC/HEIF file. Install **pillow-heif** "
+                "(`pip install pillow-heif`, also in requirements.txt), restart the app, and try again."
+            )
+        else:
+            st.error("Failed to read image.")
     else:
         plate_result = plate_model.predict(source=frame, conf=plate_conf, imgsz=imgsz, verbose=False)[0]
         plates_ltr = enumerate_plates_left_to_right(frame, plate_result)
