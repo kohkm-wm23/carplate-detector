@@ -715,15 +715,25 @@ def _body_color_card_html(label: str) -> str:
 
 def _build_results_table_html(paired_rows: list, brand_model) -> str:
     """One HTML table: fixed 34/33/33 columns, aligned across all cars (avoids Streamlit grid bugs)."""
+    # Streamlit themes often style markdown tables; inline border:none loses to those rules.
     col_pad = (
-        "padding:0 10px 0 0;border:none;vertical-align:top;width:34%;",
-        "padding:0 10px;border:none;vertical-align:top;width:33%;",
-        "padding:0 0 0 10px;border:none;vertical-align:top;width:33%;",
+        "padding:0 10px 0 0;border:none!important;border-width:0!important;"
+        "vertical-align:top;width:34%;",
+        "padding:0 10px;border:none!important;border-width:0!important;"
+        "vertical-align:top;width:33%;",
+        "padding:0 0 0 10px;border:none!important;border-width:0!important;"
+        "vertical-align:top;width:33%;",
     )
     chunks = [
-        '<div style="width:100%;max-width:100%;box-sizing:border-box;">',
+        '<div class="cdr-results-table-wrap" style="width:100%;max-width:100%;box-sizing:border-box;">',
+        "<style>"
+        ".cdr-results-table-wrap table,.cdr-results-table-wrap td,.cdr-results-table-wrap th{"
+        "border:none!important;border-width:0!important;box-shadow:none!important;}"
+        ".cdr-results-table-wrap table{border-spacing:0!important;border-collapse:collapse!important;}"
+        "</style>",
         '<table role="presentation" style="width:100%;max-width:100%;table-layout:fixed;'
-        'border-collapse:collapse;border:none;margin:0;padding:0;">',
+        "border-collapse:collapse!important;border-spacing:0!important;border:none!important;"
+        'margin:0;padding:0;">',
         "<colgroup>",
         '<col style="width:34%" />',
         '<col style="width:33%" />',
@@ -749,7 +759,7 @@ def _build_results_table_html(paired_rows: list, brand_model) -> str:
         )
         ch = _body_color_card_html(bc)
         chunks.append(
-            f'<tr><td colspan="3" style="padding:22px 0 12px 0;border:none;">'
+            f'<tr><td colspan="3" style="padding:22px 0 12px 0;border:none!important;border-width:0!important;">'
             f'<div style="font-size:1.08rem;font-weight:650;letter-spacing:0.03em;'
             f'color:inherit;border-bottom:1px solid rgba(128,132,149,0.28);'
             f'padding-bottom:10px;margin:0;">Car {i}</div></td></tr>'
@@ -765,7 +775,8 @@ def _build_results_table_html(paired_rows: list, brand_model) -> str:
         chunks.append("</tr>")
         if i < n_cars:
             chunks.append(
-                '<tr><td colspan="3" style="padding:0;height:16px;border:none;font-size:0;line-height:0;">'
+                '<tr><td colspan="3" style="padding:0;height:16px;border:none!important;border-width:0!important;'
+                'font-size:0;line-height:0;">'
                 "&nbsp;</td></tr>"
             )
     chunks.append("</tbody></table></div>")
