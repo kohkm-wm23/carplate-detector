@@ -271,6 +271,139 @@ def extract_brands_left_to_right(brand_result, brand_model) -> list:
     return rows
 
 
+def _body_paint_roi_xyxy(plate_xyxy: tuple, fh: int, fw: int):
+    """Band above the plate (lower body / bumper paint), image coordinates."""
+    x1, y1, x2, y2 = plate_xyxy
+    ph = y2 - y1
+    pw = x2 - x1
+    if ph <= 0 or pw <= 0:
+        return None
+    roi_h = int(max(ph * 2.0, 28))
+    roi_w = int(pw * 1.45)
+    cx = 0.5 * (x1 + x2)
+    x1b = int(round(cx - roi_w / 2))
+    x2b = int(round(cx + roi_w / 2))
+    y2b = y1 - 3
+    y1b = y2b - roi_h
+    x1b = max(0, min(fw - 1, x1b))
+    x2b = max(0, min(fw - 1, x2b))
+    if x2b <= x1b:
+        x1b, x2b = min(x1b, x2b), max(x1b, x2b) + 1
+        x2b = min(fw - 1, x2b)
+    y1b = max(0, min(fh - 1, y1b))
+    y2b = max(0, min(fh - 1, y2b))
+    if y2b <= y1b or x2b <= x1b:
+        return None
+    if (y2b - y1b) < 6 or (x2b - x1b) < 6:
+        return None
+    return (x1b, y1b, x2b, y2b)
+
+
+def _hsv_center_to_color_label(h: float, s: float, v: float) -> str:
+    """Map dominant HSV (OpenCV ranges) to a coarse label; order: achromatic → hue."""
+    h, s, v = float(h), float(s), float(v)
+    if v < 38:
+        return "Black (approx)"
+    if s < 38:
+        if v > 195:
+            return "White (approx)"
+        if v > 135:
+            return "Silver / light gray (approx)"
+        if v > 75:
+            return "Gray (approx)"
+        return "Dark gray (approx)"
+    if (h <= 11 or h >= 170) and v > 42:
+        return "Red (approx)"
+    if 11 < h <= 24:
+        return "Orange (approx)"
+    if 24 < h <= 40:
+        return "Yellow (approx)"
+    if 40 < h <= 88:
+        return "Green (approx)"
+    if 88 < h <= 130:
+        return "Blue (approx)"
+    if 130 < h < 170:
+        return "Purple (approx)"
+    return "Other (approx)"
+
+
+def estimate_body_color_from_plate(frame_bgr: np.ndarray, plate_xyxy: tuple) -> tuple:
+    """
+    OpenCV: ROI above plate → HSV → k-means dominant cluster → rule-based name.
+    Returns (label, sample_bgr) for UI swatch; sample_bgr may be None.
+    """
+    fh, fw = frame_bgr.shape[:2]
+    roi_box = _body_paint_roi_xyxy(plate_xyxy, fh, fw)
+    if roi_box is None:
+        return "Unknown", None
+    x1b, y1b, x2b, y2b = roi_box
+    roi = frame_bgr[y1b:y2b, x1b:x2b]
+    if roi is None or roi.size < 30:
+        return "Unknown", None
+
+    mh = max(roi.shape[0], roi.shape[1])
+    if mh > 220:
+        scale = 220.0 / mh
+        roi = cv2.resize(roi, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    pixels = hsv.reshape(-1, 3).astype(np.float32)
+    n = pixels.shape[0]
+    if n < 12:
+        return "Unknown", None
+
+    pixels = np.ascontiguousarray(pixels)
+
+    v_ch = pixels[:, 2]
+    mask = (v_ch > 14) & (v_ch < 253)
+    if np.count_nonzero(mask) > n * 0.15:
+        pixels = pixels[mask]
+        n = pixels.shape[0]
+    if n < 8:
+        return "Unknown", None
+
+    k = 3 if n >= 60 else (2 if n >= 25 else 1)
+    if k == 1:
+        ch, cs, cv = np.mean(pixels, axis=0)
+        label = _hsv_center_to_color_label(ch, cs, cv)
+        samp = cv2.cvtColor(
+            np.uint8([[[int(round(ch)), int(round(cs)), int(round(cv))]]]),
+            cv2.COLOR_HSV2BGR,
+        )[0, 0]
+        return label, (int(samp[0]), int(samp[1]), int(samp[2]))
+
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
+    attempts = 3
+    try:
+        _comp, lbls, centers = cv2.kmeans(
+            pixels,
+            k,
+            None,
+            criteria,
+            attempts,
+            cv2.KMEANS_PP_CENTERS,
+        )
+    except Exception:
+        ch, cs, cv = np.mean(pixels, axis=0)
+        label = _hsv_center_to_color_label(ch, cs, cv)
+        samp = cv2.cvtColor(
+            np.uint8([[[int(round(ch)), int(round(cs)), int(round(cv))]]]),
+            cv2.COLOR_HSV2BGR,
+        )[0, 0]
+        return label, (int(samp[0]), int(samp[1]), int(samp[2]))
+
+    labels = lbls.flatten().astype(int)
+    counts = np.bincount(labels, minlength=k)
+    dom = int(np.argmax(counts))
+    ch, cs, cv = centers[dom]
+    label = _hsv_center_to_color_label(ch, cs, cv)
+    samp = cv2.cvtColor(
+        np.uint8([[[int(round(ch)), int(round(cs)), int(round(cv))]]]),
+        cv2.COLOR_HSV2BGR,
+    )[0, 0]
+    return label, (int(samp[0]), int(samp[1]), int(samp[2]))
+
+
 def pair_plates_with_brands(plates_ltr: list, brands_ltr: list) -> list:
     """
     One row per plate (left → right). Each plate gets at most one brand:
@@ -361,6 +494,31 @@ def _draw_plate_rows_bgr(im_bgr: np.ndarray, plates_ltr: list, names) -> None:
         )
 
 
+def _draw_body_color_captions(im_bgr: np.ndarray, plates_ltr: list) -> None:
+    """Short color label under each plate box (if estimated)."""
+    col = (220, 230, 255)
+    for p in plates_ltr:
+        lab = p.get("body_color", "") or ""
+        if not lab or lab == "Unknown":
+            continue
+        x1, _, _, y2 = p["xyxy"]
+        short = lab.replace(" (approx)", "")
+        if "/" in short:
+            short = short.split("/")[0].strip()
+        short = short[:22]
+        y = min(y2 + 16, im_bgr.shape[0] - 4)
+        cv2.putText(
+            im_bgr,
+            short,
+            (x1, y),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            col,
+            1,
+            cv2.LINE_AA,
+        )
+
+
 def _draw_plate_car_index_badges(im_bgr: np.ndarray, plates_ltr: list) -> None:
     """Draw 1, 2, … above each plate (left → right) to match Results · Car N."""
     col = (0, 215, 255)
@@ -399,8 +557,9 @@ def draw_combined_detection_plot(
 
     if plates_ltr:
         _draw_plate_car_index_badges(canvas, plates_ltr)
+        _draw_body_color_captions(canvas, plates_ltr)
 
-    leg = "Plate (amber) = kept only  ·  Brand (orange)  ·  numbers = Car 1,2,… (left→right)"
+    leg = "Plate (amber)  ·  Brand (orange)  ·  # = Car 1,2…  ·  text under plate = color (approx)"
     cv2.putText(
         canvas,
         leg,
@@ -517,6 +676,32 @@ def _brand_card_html(
     )
 
 
+def _body_color_card_html(label: str, bgr_sample: tuple | None) -> str:
+    hint = "OpenCV: band above plate → HSV k-means → coarse label (lighting-sensitive)."
+    swatch = ""
+    if bgr_sample is not None:
+        b, g, r = bgr_sample[0], bgr_sample[1], bgr_sample[2]
+        swatch = (
+            f'<div style="width:100%;height:44px;border-radius:10px;margin:10px 0;'
+            f'border:1px solid rgba(128,132,149,0.35);background:rgb({r},{g},{b});"></div>'
+        )
+    if label and label != "Unknown":
+        pill = _result_pill("ok", "Estimate")
+    else:
+        pill = _result_pill("warn", "Unknown")
+    esc = html.escape(label or "Unknown")
+    return (
+        f'<div style="{_RCARD_BOX} min-height:118px;">'
+        f"{_result_card_title('Body color (OpenCV)')}"
+        f'<div style="margin-bottom:10px;">{pill}</div>'
+        f"{swatch}"
+        f'<p style="margin:0;font-size:1.2rem;font-weight:750;">{esc}</p>'
+        f'<p style="margin:8px 0 0 0;font-size:12px;line-height:1.4;color:rgba(128,132,149,0.85);">'
+        f"{html.escape(hint)}</p>"
+        f"</div>"
+    )
+
+
 def render_results_section(paired_rows: list, brand_model):
     """paired_rows: from pair_plates_with_brands, each with plate_txt set on plate dict."""
     st.markdown("### Results")
@@ -546,7 +731,7 @@ def render_results_section(paired_rows: list, brand_model):
         plate_txt = plate.get("plate_txt", "")
         has_crop = plate.get("crop") is not None
 
-        col_p, col_b = st.columns(2, gap="large")
+        col_p, col_b, col_c = st.columns(3, gap="medium")
         with col_p:
             st.markdown(_plate_ocr_card_html(plate_txt, has_crop), unsafe_allow_html=True)
         with col_b:
@@ -561,6 +746,10 @@ def render_results_section(paired_rows: list, brand_model):
                 ),
                 unsafe_allow_html=True,
             )
+        with col_c:
+            bc = plate.get("body_color", "Unknown")
+            bb = plate.get("body_color_bgr")
+            st.markdown(_body_color_card_html(bc, bb), unsafe_allow_html=True)
         st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
 
 
@@ -628,6 +817,9 @@ if img_file:
         for p in plates_ltr:
             cr = p.get("crop")
             p["plate_txt"] = run_ocr_stable(cr, ocr_engine) if cr is not None else ""
+            clab, cbgr = estimate_body_color_from_plate(frame, p["xyxy"])
+            p["body_color"] = clab
+            p["body_color_bgr"] = cbgr
 
         brand_use_conf = max(0.2, det_conf)
         brand_result = None
