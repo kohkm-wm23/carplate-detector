@@ -727,9 +727,13 @@ def _build_results_table_html(paired_rows: list, brand_model) -> str:
     chunks = [
         '<div class="cdr-results-table-wrap" style="width:100%;max-width:100%;box-sizing:border-box;">',
         "<style>"
-        ".cdr-results-table-wrap table,.cdr-results-table-wrap td,.cdr-results-table-wrap th{"
-        "border:none!important;border-width:0!important;box-shadow:none!important;}"
+        ".cdr-results-table-wrap table,.cdr-results-table-wrap tbody,.cdr-results-table-wrap tr,"
+        ".cdr-results-table-wrap td,.cdr-results-table-wrap th{"
+        "border:none!important;border-width:0!important;border-style:none!important;"
+        "outline:none!important;box-shadow:none!important;background:transparent!important;}"
         ".cdr-results-table-wrap table{border-spacing:0!important;border-collapse:collapse!important;}"
+        ".cdr-results-table-wrap td+td,.cdr-results-table-wrap tr+tr td{border-left:none!important;"
+        "border-top:none!important;}"
         "</style>",
         '<table role="presentation" style="width:100%;max-width:100%;table-layout:fixed;'
         "border-collapse:collapse!important;border-spacing:0!important;border:none!important;"
@@ -761,10 +765,11 @@ def _build_results_table_html(paired_rows: list, brand_model) -> str:
         chunks.append(
             f'<tr><td colspan="3" style="padding:22px 0 12px 0;border:none!important;border-width:0!important;">'
             f'<div style="font-size:1.08rem;font-weight:650;letter-spacing:0.03em;'
-            f'color:inherit;border-bottom:1px solid rgba(128,132,149,0.28);'
-            f'padding-bottom:10px;margin:0;">Car {i}</div></td></tr>'
+            f'color:inherit;padding-bottom:4px;margin:0;">Car {i}</div></td></tr>'
         )
-        chunks.append('<tr style="vertical-align:top;">')
+        chunks.append(
+            '<tr style="vertical-align:top;border:none!important;border-width:0!important;">'
+        )
         for cell_html, cst in zip((ph, bh, ch), col_pad):
             chunks.append(
                 f'<td style="{cst}">'
