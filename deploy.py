@@ -723,7 +723,7 @@ def _build_results_table_html(paired_rows: list, brand_model) -> str:
     chunks = [
         '<div style="width:100%;max-width:100%;box-sizing:border-box;">',
         '<table role="presentation" style="width:100%;max-width:100%;table-layout:fixed;'
-        "border-collapse:collapse;border:none;margin:0;padding:0;">",
+        'border-collapse:collapse;border:none;margin:0;padding:0;">',
         "<colgroup>",
         '<col style="width:34%" />',
         '<col style="width:33%" />',
