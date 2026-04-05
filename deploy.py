@@ -578,6 +578,17 @@ _RCARD_BOX = (
     "background:rgba(128,132,149,0.06);box-sizing:border-box;"
 )
 
+# Results grid: three equal columns, identical card height
+_RESULT_CARD_MIN_PX = 272
+_RCARD_CELL = (
+    f"{_RCARD_BOX} min-height:{_RESULT_CARD_MIN_PX}px;height:100%;"
+    + "display:flex;flex-direction:column;align-items:stretch;"
+)
+_RESULT_ROW_GRID = (
+    "display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;"
+    + "align-items:stretch;width:100%;margin:0 0 6px 0;"
+)
+
 
 def _result_card_title(label: str) -> str:
     return (
@@ -602,17 +613,19 @@ def _result_pill(kind: str, text: str) -> str:
 def _plate_ocr_card_html(plate_txt: str, has_crop: bool) -> str:
     if not has_crop:
         body = (
-            "<p style='margin:0;font-size:14px;color:rgba(128,132,149,0.88);'>"
+            "<p style='margin:0;font-size:14px;line-height:1.45;color:rgba(128,132,149,0.88);'>"
             "Could not build a crop for OCR (box too small or invalid).</p>"
         )
         pill = _result_pill("warn", "No crop")
         val = "—"
         return (
-            f'<div style="{_RCARD_BOX} min-height:140px;">'
+            f'<div style="{_RCARD_CELL}">'
             f"{_result_card_title('License plate · OCR')}"
             f'<div style="margin-bottom:10px;">{pill}</div>'
-            f'<p style="margin:6px 0 8px 0;font-size:1.65rem;font-weight:800;font-family:ui-monospace,Consolas,monospace;">'
-            f"{html.escape(val)}</p>{body}</div>"
+            f'<p style="margin:0 0 8px 0;font-size:1.65rem;font-weight:800;font-family:ui-monospace,Consolas,monospace;">'
+            f"{html.escape(val)}</p>"
+            f'<div style="flex:1;min-height:8px;"></div>'
+            f'<div style="margin-top:auto;">{body}</div></div>'
         )
 
     if plate_txt and is_valid_plate(plate_txt):
@@ -626,12 +639,13 @@ def _plate_ocr_card_html(plate_txt: str, has_crop: bool) -> str:
         sub = "No reliable characters were read from the detected plate region."
     val = html.escape(plate_txt) if plate_txt else "—"
     return (
-        f'<div style="{_RCARD_BOX} min-height:140px;">'
+        f'<div style="{_RCARD_CELL}">'
         f"{_result_card_title('License plate · OCR')}"
         f'<div style="margin-bottom:10px;">{pill}</div>'
-        f'<p style="margin:6px 0 8px 0;font-size:1.85rem;font-weight:800;font-family:ui-monospace,Consolas,monospace;'
+        f'<p style="margin:0 0 8px 0;font-size:1.85rem;font-weight:800;font-family:ui-monospace,Consolas,monospace;'
         f'letter-spacing:0.1em;line-height:1.2;">{val}</p>'
-        f'<p style="margin:0;font-size:13px;line-height:1.45;color:rgba(128,132,149,0.88);">'
+        f'<div style="flex:1;min-height:8px;"></div>'
+        f'<p style="margin:0;margin-top:auto;font-size:13px;line-height:1.45;color:rgba(128,132,149,0.88);">'
         f"{html.escape(sub)}</p>"
         f"</div>"
     )
@@ -645,6 +659,7 @@ def _brand_card_html(
 ) -> str:
     title = "Car brand"
     head = _result_card_title(title)
+    grow = '<div style="flex:1;min-height:4px;"></div>'
     if not deployed:
         pill = _result_pill("muted", "Unavailable")
         hint = (
@@ -652,51 +667,48 @@ def _brand_card_html(
             if weights_hint
             else ""
         )
-        body = (
-            "<p style='margin:8px 0 0 0;font-size:14px;line-height:1.5;color:rgba(128,132,149,0.88);'>"
+        main = (
+            "<p style='margin:0;font-size:14px;line-height:1.5;color:rgba(128,132,149,0.88);'>"
             f"Model not deployed for this app.{hint}</p>"
         )
+        inner = f'<div style="flex:1;display:flex;flex-direction:column;justify-content:center;min-height:0;">{main}</div>'
     elif not label:
         pill = _result_pill("warn", "No detection")
-        body = (
-            "<p style='margin:8px 0 0 0;font-size:14px;color:rgba(128,132,149,0.88);'>"
+        main = (
+            "<p style='margin:0;font-size:14px;line-height:1.45;color:rgba(128,132,149,0.88);'>"
             "Nothing confident enough to report for this image.</p>"
         )
+        inner = f'<div style="flex:1;display:flex;flex-direction:column;justify-content:center;min-height:0;">{main}</div>'
     else:
         pill = _result_pill("ok", "Detected")
         esc = html.escape(label)
-        body = (
-            f"<p style='margin:10px 0 6px 0;font-size:1.35rem;font-weight:750;line-height:1.3;'>{esc}</p>"
+        main = (
+            f"<p style='margin:0 0 6px 0;font-size:1.35rem;font-weight:750;line-height:1.3;'>{esc}</p>"
             f"<p style='margin:0;font-size:13px;color:rgba(128,132,149,0.85);'>"
             f"Confidence · {score:.2f}</p>"
         )
+        inner = f'<div style="flex:1;display:flex;flex-direction:column;min-height:0;">{main}{grow}</div>'
     return (
-        f'<div style="{_RCARD_BOX} min-height:118px;">{head}'
-        f'<div style="margin-bottom:10px;">{pill}</div>{body}</div>'
+        f'<div style="{_RCARD_CELL}">{head}'
+        f'<div style="margin-bottom:10px;">{pill}</div>'
+        f"{inner}</div>"
     )
 
 
-def _body_color_card_html(label: str, bgr_sample: tuple | None) -> str:
-    hint = "OpenCV: band above plate → HSV k-means → coarse label (lighting-sensitive)."
-    swatch = ""
-    if bgr_sample is not None:
-        b, g, r = bgr_sample[0], bgr_sample[1], bgr_sample[2]
-        swatch = (
-            f'<div style="width:100%;height:44px;border-radius:10px;margin:10px 0;'
-            f'border:1px solid rgba(128,132,149,0.35);background:rgb({r},{g},{b});"></div>'
-        )
+def _body_color_card_html(label: str) -> str:
+    hint = "OpenCV: Lightning sensitive"
     if label and label != "Unknown":
         pill = _result_pill("ok", "Estimate")
     else:
         pill = _result_pill("warn", "Unknown")
     esc = html.escape(label or "Unknown")
     return (
-        f'<div style="{_RCARD_BOX} min-height:118px;">'
+        f'<div style="{_RCARD_CELL}">'
         f"{_result_card_title('Body color (OpenCV)')}"
         f'<div style="margin-bottom:10px;">{pill}</div>'
-        f"{swatch}"
-        f'<p style="margin:0;font-size:1.2rem;font-weight:750;">{esc}</p>'
-        f'<p style="margin:8px 0 0 0;font-size:12px;line-height:1.4;color:rgba(128,132,149,0.85);">'
+        f'<p style="margin:0 0 4px 0;font-size:1.25rem;font-weight:750;line-height:1.35;">{esc}</p>'
+        f'<div style="flex:1;min-height:8px;"></div>'
+        f'<p style="margin:0;margin-top:auto;font-size:12px;line-height:1.4;color:rgba(128,132,149,0.85);">'
         f"{html.escape(hint)}</p>"
         f"</div>"
     )
@@ -731,26 +743,24 @@ def render_results_section(paired_rows: list, brand_model):
         plate_txt = plate.get("plate_txt", "")
         has_crop = plate.get("crop") is not None
 
-        col_p, col_b, col_c = st.columns(3, gap="medium")
-        with col_p:
-            st.markdown(_plate_ocr_card_html(plate_txt, has_crop), unsafe_allow_html=True)
-        with col_b:
-            bl = brand["label"] if brand else ""
-            bs = brand["score"] if brand else 0.0
-            st.markdown(
-                _brand_card_html(
-                    brand_model is not None,
-                    bl,
-                    bs,
-                    weights_hint="models/carbrand/best.pt",
-                ),
-                unsafe_allow_html=True,
-            )
-        with col_c:
-            bc = plate.get("body_color", "Unknown")
-            bb = plate.get("body_color_bgr")
-            st.markdown(_body_color_card_html(bc, bb), unsafe_allow_html=True)
-        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+        bl = brand["label"] if brand else ""
+        bs = brand["score"] if brand else 0.0
+        bc = plate.get("body_color", "Unknown")
+        row_html = (
+            f'<div style="{_RESULT_ROW_GRID}">'
+            '<div style="min-width:0;display:flex;align-items:stretch;">'
+            f"{_plate_ocr_card_html(plate_txt, has_crop)}"
+            "</div>"
+            '<div style="min-width:0;display:flex;align-items:stretch;">'
+            f"{_brand_card_html(brand_model is not None, bl, bs, weights_hint='models/carbrand/best.pt')}"
+            "</div>"
+            '<div style="min-width:0;display:flex;align-items:stretch;">'
+            f"{_body_color_card_html(bc)}"
+            "</div>"
+            "</div>"
+        )
+        st.markdown(row_html, unsafe_allow_html=True)
+        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
 
 
 # -----------------------------
