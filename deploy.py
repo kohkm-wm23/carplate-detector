@@ -578,15 +578,11 @@ _RCARD_BOX = (
     "background:rgba(128,132,149,0.06);box-sizing:border-box;"
 )
 
-# Results grid: three equal columns, identical card height
-_RESULT_CARD_MIN_PX = 272
+# Results: fixed table columns + equal card height (Streamlit-safe alignment)
+_RESULT_CARD_MIN_PX = 300
 _RCARD_CELL = (
-    f"{_RCARD_BOX} min-height:{_RESULT_CARD_MIN_PX}px;height:100%;"
-    + "display:flex;flex-direction:column;align-items:stretch;"
-)
-_RESULT_ROW_GRID = (
-    "display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;"
-    + "align-items:stretch;width:100%;margin:0 0 6px 0;"
+    f"{_RCARD_BOX} min-height:{_RESULT_CARD_MIN_PX}px;height:100%;width:100%;max-width:100%;"
+    + "display:flex;flex-direction:column;align-items:stretch;box-sizing:border-box;"
 )
 
 
@@ -622,7 +618,8 @@ def _plate_ocr_card_html(plate_txt: str, has_crop: bool) -> str:
             f'<div style="{_RCARD_CELL}">'
             f"{_result_card_title('License plate · OCR')}"
             f'<div style="margin-bottom:10px;">{pill}</div>'
-            f'<p style="margin:0 0 8px 0;font-size:1.65rem;font-weight:800;font-family:ui-monospace,Consolas,monospace;">'
+            f'<p style="margin:0 0 8px 0;font-size:1.65rem;font-weight:800;font-family:ui-monospace,Consolas,monospace;'
+            f'word-break:break-word;overflow-wrap:anywhere;">'
             f"{html.escape(val)}</p>"
             f'<div style="flex:1;min-height:8px;"></div>'
             f'<div style="margin-top:auto;">{body}</div></div>'
@@ -643,7 +640,7 @@ def _plate_ocr_card_html(plate_txt: str, has_crop: bool) -> str:
         f"{_result_card_title('License plate · OCR')}"
         f'<div style="margin-bottom:10px;">{pill}</div>'
         f'<p style="margin:0 0 8px 0;font-size:1.85rem;font-weight:800;font-family:ui-monospace,Consolas,monospace;'
-        f'letter-spacing:0.1em;line-height:1.2;">{val}</p>'
+        f'letter-spacing:0.1em;line-height:1.2;word-break:break-word;overflow-wrap:anywhere;">{val}</p>'
         f'<div style="flex:1;min-height:8px;"></div>'
         f'<p style="margin:0;margin-top:auto;font-size:13px;line-height:1.45;color:rgba(128,132,149,0.88);">'
         f"{html.escape(sub)}</p>"
@@ -683,7 +680,8 @@ def _brand_card_html(
         pill = _result_pill("ok", "Detected")
         esc = html.escape(label)
         main = (
-            f"<p style='margin:0 0 6px 0;font-size:1.35rem;font-weight:750;line-height:1.3;'>{esc}</p>"
+            f"<p style='margin:0 0 6px 0;font-size:1.35rem;font-weight:750;line-height:1.3;"
+            f"word-break:break-word;overflow-wrap:anywhere;'>{esc}</p>"
             f"<p style='margin:0;font-size:13px;color:rgba(128,132,149,0.85);'>"
             f"Confidence · {score:.2f}</p>"
         )
@@ -706,12 +704,72 @@ def _body_color_card_html(label: str) -> str:
         f'<div style="{_RCARD_CELL}">'
         f"{_result_card_title('Body color (OpenCV)')}"
         f'<div style="margin-bottom:10px;">{pill}</div>'
-        f'<p style="margin:0 0 4px 0;font-size:1.25rem;font-weight:750;line-height:1.35;">{esc}</p>'
+        f'<p style="margin:0 0 4px 0;font-size:1.15rem;font-weight:750;line-height:1.35;'
+        f'word-break:break-word;overflow-wrap:anywhere;">{esc}</p>'
         f'<div style="flex:1;min-height:8px;"></div>'
         f'<p style="margin:0;margin-top:auto;font-size:12px;line-height:1.4;color:rgba(128,132,149,0.85);">'
         f"{html.escape(hint)}</p>"
         f"</div>"
     )
+
+
+def _build_results_table_html(paired_rows: list, brand_model) -> str:
+    """One HTML table: fixed 34/33/33 columns, aligned across all cars (avoids Streamlit grid bugs)."""
+    col_pad = (
+        "padding:0 10px 0 0;border:none;vertical-align:top;width:34%;",
+        "padding:0 10px;border:none;vertical-align:top;width:33%;",
+        "padding:0 0 0 10px;border:none;vertical-align:top;width:33%;",
+    )
+    chunks = [
+        '<div style="width:100%;max-width:100%;box-sizing:border-box;">',
+        '<table role="presentation" style="width:100%;max-width:100%;table-layout:fixed;'
+        "border-collapse:collapse;border:none;margin:0;padding:0;">",
+        "<colgroup>",
+        '<col style="width:34%" />',
+        '<col style="width:33%" />',
+        '<col style="width:33%" />',
+        "</colgroup>",
+        "<tbody>",
+    ]
+    n_cars = len(paired_rows)
+    for i, row in enumerate(paired_rows, start=1):
+        plate = row["plate"]
+        brand = row["brand"]
+        plate_txt = plate.get("plate_txt", "")
+        has_crop = plate.get("crop") is not None
+        bl = brand["label"] if brand else ""
+        bs = brand["score"] if brand else 0.0
+        bc = plate.get("body_color", "Unknown")
+        ph = _plate_ocr_card_html(plate_txt, has_crop)
+        bh = _brand_card_html(
+            brand_model is not None,
+            bl,
+            bs,
+            weights_hint="models/carbrand/best.pt",
+        )
+        ch = _body_color_card_html(bc)
+        chunks.append(
+            f'<tr><td colspan="3" style="padding:22px 0 12px 0;border:none;">'
+            f'<div style="font-size:1.08rem;font-weight:650;letter-spacing:0.03em;'
+            f'color:inherit;border-bottom:1px solid rgba(128,132,149,0.28);'
+            f'padding-bottom:10px;margin:0;">Car {i}</div></td></tr>'
+        )
+        chunks.append('<tr style="vertical-align:top;">')
+        for cell_html, cst in zip((ph, bh, ch), col_pad):
+            chunks.append(
+                f'<td style="{cst}">'
+                f'<div style="display:flex;align-items:stretch;min-height:{_RESULT_CARD_MIN_PX}px;'
+                f'height:100%;width:100%;box-sizing:border-box;">{cell_html}</div>'
+                f"</td>"
+            )
+        chunks.append("</tr>")
+        if i < n_cars:
+            chunks.append(
+                '<tr><td colspan="3" style="padding:0;height:16px;border:none;font-size:0;line-height:0;">'
+                "&nbsp;</td></tr>"
+            )
+    chunks.append("</tbody></table></div>")
+    return "".join(chunks)
 
 
 def render_results_section(paired_rows: list, brand_model):
@@ -736,31 +794,7 @@ def render_results_section(paired_rows: list, brand_model):
 
     st.caption("Cars are ordered left → right by plate position (same as numbers on the detection image).")
 
-    for i, row in enumerate(paired_rows, start=1):
-        st.markdown(f"#### Car {i}")
-        plate = row["plate"]
-        brand = row["brand"]
-        plate_txt = plate.get("plate_txt", "")
-        has_crop = plate.get("crop") is not None
-
-        bl = brand["label"] if brand else ""
-        bs = brand["score"] if brand else 0.0
-        bc = plate.get("body_color", "Unknown")
-        row_html = (
-            f'<div style="{_RESULT_ROW_GRID}">'
-            '<div style="min-width:0;display:flex;align-items:stretch;">'
-            f"{_plate_ocr_card_html(plate_txt, has_crop)}"
-            "</div>"
-            '<div style="min-width:0;display:flex;align-items:stretch;">'
-            f"{_brand_card_html(brand_model is not None, bl, bs, weights_hint='models/carbrand/best.pt')}"
-            "</div>"
-            '<div style="min-width:0;display:flex;align-items:stretch;">'
-            f"{_body_color_card_html(bc)}"
-            "</div>"
-            "</div>"
-        )
-        st.markdown(row_html, unsafe_allow_html=True)
-        st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
+    st.markdown(_build_results_table_html(paired_rows, brand_model), unsafe_allow_html=True)
 
 
 # -----------------------------
