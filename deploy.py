@@ -253,6 +253,33 @@ def enumerate_plates_left_to_right(frame_bgr: np.ndarray, plate_result, max_cars
     return rows, n_raw
 
 
+def _iou_xyxy(a: tuple, b: tuple) -> float:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+    inter = float(iw * ih)
+    if inter <= 0:
+        return 0.0
+    area_a = float(max(0, ax2 - ax1) * max(0, ay2 - ay1))
+    area_b = float(max(0, bx2 - bx1) * max(0, by2 - by1))
+    den = max(1.0, area_a + area_b - inter)
+    return inter / den
+
+
+def _dedupe_overlapping_cars(rows: list, iou_thr: float = 0.55) -> list:
+    """Greedy NMS-style dedupe to avoid same car repeated twice."""
+    if not rows:
+        return []
+    ordered = sorted(rows, key=lambda r: (r["conf"], r["area"]), reverse=True)
+    kept = []
+    for r in ordered:
+        if all(_iou_xyxy(r["xyxy"], k["xyxy"]) < iou_thr for k in kept):
+            kept.append(r)
+    return kept
+
+
 def enumerate_cars_left_to_right(frame_bgr: np.ndarray, car_result, max_cars: int) -> tuple:
     """Car detections: keep up to max_cars by area, then sort left → right."""
     boxes = None if car_result is None else car_result.boxes
@@ -277,6 +304,7 @@ def enumerate_cars_left_to_right(frame_bgr: np.ndarray, car_result, max_cars: in
             }
         )
     n_raw = len(rows)
+    rows = _dedupe_overlapping_cars(rows, iou_thr=0.55)
     mc = max(1, int(max_cars))
     if len(rows) > mc:
         rows.sort(key=lambda r: r["area"], reverse=True)
@@ -309,34 +337,6 @@ def extract_brands_left_to_right(brand_result, brand_model) -> list:
         )
     rows.sort(key=lambda r: r["x_center"])
     return rows
-
-
-def _body_paint_roi_xyxy(plate_xyxy: tuple, fh: int, fw: int):
-    """Band above the plate (lower body / bumper paint), image coordinates."""
-    x1, y1, x2, y2 = plate_xyxy
-    ph = y2 - y1
-    pw = x2 - x1
-    if ph <= 0 or pw <= 0:
-        return None
-    roi_h = int(max(ph * 2.0, 28))
-    roi_w = int(pw * 1.45)
-    cx = 0.5 * (x1 + x2)
-    x1b = int(round(cx - roi_w / 2))
-    x2b = int(round(cx + roi_w / 2))
-    y2b = y1 - 3
-    y1b = y2b - roi_h
-    x1b = max(0, min(fw - 1, x1b))
-    x2b = max(0, min(fw - 1, x2b))
-    if x2b <= x1b:
-        x1b, x2b = min(x1b, x2b), max(x1b, x2b) + 1
-        x2b = min(fw - 1, x2b)
-    y1b = max(0, min(fh - 1, y1b))
-    y2b = max(0, min(fh - 1, y2b))
-    if y2b <= y1b or x2b <= x1b:
-        return None
-    if (y2b - y1b) < 6 or (x2b - x1b) < 6:
-        return None
-    return (x1b, y1b, x2b, y2b)
 
 
 def _hsv_center_to_single_color_label(h: float, s: float, v: float) -> str:
@@ -378,6 +378,14 @@ def estimate_body_color_from_car_crop(car_crop_bgr: np.ndarray) -> tuple:
         scale = 260.0 / mh
         roi = cv2.resize(roi, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
 
+    # Focus on central body region to reduce road/background bias.
+    rh, rw = roi.shape[:2]
+    y1, y2 = int(rh * 0.20), int(rh * 0.85)
+    x1, x2 = int(rw * 0.10), int(rw * 0.90)
+    core = roi[y1:y2, x1:x2]
+    if core is not None and core.size > 30:
+        roi = core
+
     hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
     pixels = hsv.reshape(-1, 3).astype(np.float32)
     n0 = pixels.shape[0]
@@ -386,7 +394,8 @@ def estimate_body_color_from_car_crop(car_crop_bgr: np.ndarray) -> tuple:
 
     # Drop very dark/bright extremes to reduce shadow/highlight bias.
     v_ch = pixels[:, 2]
-    mask = (v_ch > 18) & (v_ch < 248)
+    s_ch = pixels[:, 1]
+    mask = (v_ch > 20) & (v_ch < 245) & (s_ch > 10)
     if np.count_nonzero(mask) > n0 * 0.20:
         pixels = pixels[mask]
     n = pixels.shape[0]
@@ -421,176 +430,12 @@ def estimate_body_color_from_car_crop(car_crop_bgr: np.ndarray) -> tuple:
     return label, pct, (int(samp[0]), int(samp[1]), int(samp[2]))
 
 
-def _hsv_center_to_color_label(h: float, s: float, v: float) -> str:
-    """Map dominant HSV (OpenCV ranges) to a coarse label; order: achromatic → hue."""
-    h, s, v = float(h), float(s), float(v)
-    if v < 38:
-        return "Black (approx)"
-    if s < 38:
-        if v > 195:
-            return "White (approx)"
-        if v > 135:
-            return "Silver / light gray (approx)"
-        if v > 75:
-            return "Gray (approx)"
-        return "Dark gray (approx)"
-    if (h <= 11 or h >= 170) and v > 42:
-        return "Red (approx)"
-    if 11 < h <= 24:
-        return "Orange (approx)"
-    if 24 < h <= 40:
-        return "Yellow (approx)"
-    if 40 < h <= 88:
-        return "Green (approx)"
-    if 88 < h <= 130:
-        return "Blue (approx)"
-    if 130 < h < 170:
-        return "Purple (approx)"
-    return "Other (approx)"
-
-
-def estimate_body_color_from_plate(frame_bgr: np.ndarray, plate_xyxy: tuple) -> tuple:
-    """
-    OpenCV: ROI above plate → HSV → k-means dominant cluster → rule-based name.
-    Returns (label, sample_bgr) for UI swatch; sample_bgr may be None.
-    """
-    fh, fw = frame_bgr.shape[:2]
-    roi_box = _body_paint_roi_xyxy(plate_xyxy, fh, fw)
-    if roi_box is None:
-        return "Unknown", None
-    x1b, y1b, x2b, y2b = roi_box
-    roi = frame_bgr[y1b:y2b, x1b:x2b]
-    if roi is None or roi.size < 30:
-        return "Unknown", None
-
-    mh = max(roi.shape[0], roi.shape[1])
-    if mh > 220:
-        scale = 220.0 / mh
-        roi = cv2.resize(roi, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
-
-    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-    pixels = hsv.reshape(-1, 3).astype(np.float32)
-    n = pixels.shape[0]
-    if n < 12:
-        return "Unknown", None
-
-    pixels = np.ascontiguousarray(pixels)
-
-    v_ch = pixels[:, 2]
-    mask = (v_ch > 14) & (v_ch < 253)
-    if np.count_nonzero(mask) > n * 0.15:
-        pixels = pixels[mask]
-        n = pixels.shape[0]
-    if n < 8:
-        return "Unknown", None
-
-    k = 3 if n >= 60 else (2 if n >= 25 else 1)
-    if k == 1:
-        ch, cs, cv = np.mean(pixels, axis=0)
-        label = _hsv_center_to_color_label(ch, cs, cv)
-        samp = cv2.cvtColor(
-            np.uint8([[[int(round(ch)), int(round(cs)), int(round(cv))]]]),
-            cv2.COLOR_HSV2BGR,
-        )[0, 0]
-        return label, (int(samp[0]), int(samp[1]), int(samp[2]))
-
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
-    attempts = 3
-    try:
-        _comp, lbls, centers = cv2.kmeans(
-            pixels,
-            k,
-            None,
-            criteria,
-            attempts,
-            cv2.KMEANS_PP_CENTERS,
-        )
-    except Exception:
-        ch, cs, cv = np.mean(pixels, axis=0)
-        label = _hsv_center_to_color_label(ch, cs, cv)
-        samp = cv2.cvtColor(
-            np.uint8([[[int(round(ch)), int(round(cs)), int(round(cv))]]]),
-            cv2.COLOR_HSV2BGR,
-        )[0, 0]
-        return label, (int(samp[0]), int(samp[1]), int(samp[2]))
-
-    labels = lbls.flatten().astype(int)
-    counts = np.bincount(labels, minlength=k)
-    dom = int(np.argmax(counts))
-    ch, cs, cv = centers[dom]
-    label = _hsv_center_to_color_label(ch, cs, cv)
-    samp = cv2.cvtColor(
-        np.uint8([[[int(round(ch)), int(round(cs)), int(round(cv))]]]),
-        cv2.COLOR_HSV2BGR,
-    )[0, 0]
-    return label, (int(samp[0]), int(samp[1]), int(samp[2]))
-
-
-def pair_plates_with_brands(plates_ltr: list, brands_ltr: list) -> list:
-    """
-    One row per plate (left → right). Each plate gets at most one brand:
-    greedy match by nearest x_center among unused brands.
-    """
-    if not plates_ltr:
-        return []
-    used = set()
-    paired = []
-    for p in plates_ltr:
-        best_j = None
-        best_d = 1e18
-        for j, b in enumerate(brands_ltr):
-            if j in used:
-                continue
-            d = abs(p["x_center"] - b["x_center"])
-            if d < best_d:
-                best_d = d
-                best_j = j
-        brand = None
-        if best_j is not None:
-            used.add(best_j)
-            brand = brands_ltr[best_j]
-        paired.append({"plate": p, "brand": brand})
-    return paired
-
-
 def _cls_name(names, cls_id: int) -> str:
     if isinstance(names, dict):
         return str(names.get(cls_id, str(cls_id)))
     if 0 <= cls_id < len(names):
         return str(names[cls_id])
     return str(cls_id)
-
-
-def _draw_detection_boxes_bgr(
-    im_bgr: np.ndarray,
-    boxes,
-    names,
-    color_bgr: tuple,
-    tag: str,
-) -> None:
-    if boxes is None or len(boxes) == 0:
-        return
-    xyxy = boxes.xyxy.cpu().numpy()
-    confs = boxes.conf.cpu().numpy()
-    clss = boxes.cls.cpu().numpy().astype(int)
-    for i in range(len(boxes)):
-        x1, y1, x2, y2 = [int(v) for v in xyxy[i]]
-        cls_id = int(clss[i])
-        cf = float(confs[i])
-        lab = _cls_name(names, cls_id)
-        label = f"{tag}{lab} {cf:.2f}"
-        cv2.rectangle(im_bgr, (x1, y1), (x2, y2), color_bgr, 2)
-        y_txt = max(y1 - 6, 18)
-        cv2.putText(
-            im_bgr,
-            label,
-            (x1, y_txt),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            color_bgr,
-            2,
-            cv2.LINE_AA,
-        )
 
 
 def _draw_plate_rows_bgr(im_bgr: np.ndarray, plates_ltr: list, names) -> None:
@@ -641,23 +486,6 @@ def _draw_body_color_captions(im_bgr: np.ndarray, plates_ltr: list) -> None:
         )
 
 
-def _draw_plate_car_index_badges(im_bgr: np.ndarray, plates_ltr: list) -> None:
-    """Draw 1, 2, … above each plate (left → right) to match Results · Car N."""
-    col = (0, 215, 255)
-    for k, p in enumerate(plates_ltr, start=1):
-        x1, y1, _, _ = p["xyxy"]
-        cv2.putText(
-            im_bgr,
-            str(k),
-            (x1, max(y1 - 6, 24)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.95,
-            col,
-            2,
-            cv2.LINE_AA,
-        )
-
-
 def _draw_car_rows_bgr(im_bgr: np.ndarray, cars_ltr: list, names) -> None:
     col = (240, 110, 30)
     for i, c in enumerate(cars_ltr, start=1):
@@ -689,13 +517,32 @@ def _draw_car_rows_bgr(im_bgr: np.ndarray, cars_ltr: list, names) -> None:
         )
 
 
+def _draw_brand_rows_bgr(im_bgr: np.ndarray, brand_rows: list) -> None:
+    col = (255, 128, 0)
+    for b in brand_rows:
+        x1, y1, x2, y2 = b["xyxy"]
+        label = f'brand {b["label"]} {b["score"]:.2f}'
+        cv2.rectangle(im_bgr, (x1, y1), (x2, y2), col, 2)
+        cv2.putText(
+            im_bgr,
+            label,
+            (x1, max(y1 - 8, 18)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.52,
+            col,
+            2,
+            cv2.LINE_AA,
+        )
+
+
 def draw_car_first_detection_plot(
     frame_bgr: np.ndarray,
     car_rows: list,
     plate_model,
     car_model,
+    n_cars_raw: int = 0,
 ) -> np.ndarray:
-    """Single BGR image: kept cars + plate overlays + car index."""
+    """Single BGR image: kept cars + per-car brand/plate overlays + car index."""
     canvas = frame_bgr.copy()
     h = canvas.shape[0]
 
@@ -712,44 +559,31 @@ def draw_car_first_detection_plot(
         _draw_plate_rows_bgr(canvas, plates, plate_model.names)
         _draw_body_color_captions(canvas, plates)
 
-    leg = "Car (orange) · Plate (amber) · # = Car 1,2,... · text under plate = dominant color"
+    brands = []
+    for r in car_rows:
+        b = r.get("brand")
+        if b is not None:
+            brands.append(b)
+    if brands:
+        _draw_brand_rows_bgr(canvas, brands)
+
+    n_kept = len(car_rows)
+    n_raw = int(n_cars_raw) if n_cars_raw else 0
+    count_txt = f"Cars detected: {n_raw if n_raw > 0 else n_kept}"
+    if n_cars_raw > 0 and n_kept != n_cars_raw:
+        count_txt += f" (showing {n_kept})"
     cv2.putText(
         canvas,
-        leg,
-        (8, h - 12),
+        count_txt,
+        (10, 26),
         cv2.FONT_HERSHEY_SIMPLEX,
-        0.5,
-        (220, 220, 220),
-        1,
+        0.72,
+        (245, 245, 245),
+        2,
         cv2.LINE_AA,
     )
-    return canvas
 
-
-def draw_combined_detection_plot(
-    frame_bgr: np.ndarray,
-    brand_result,
-    plate_model,
-    brand_model,
-    plates_ltr=None,
-) -> np.ndarray:
-    """Single BGR image: kept plate boxes + brand overlays; Car 1,2,… on plates."""
-    canvas = frame_bgr.copy()
-    h = canvas.shape[0]
-
-    COL_BRAND = (255, 128, 0)  # BGR brand accent
-
-    if plates_ltr:
-        _draw_plate_rows_bgr(canvas, plates_ltr, plate_model.names)
-
-    if brand_model is not None and brand_result is not None and brand_result.boxes is not None:
-        _draw_detection_boxes_bgr(canvas, brand_result.boxes, brand_model.names, COL_BRAND, "brand ")
-
-    if plates_ltr:
-        _draw_plate_car_index_badges(canvas, plates_ltr)
-        _draw_body_color_captions(canvas, plates_ltr)
-
-    leg = "Plate (amber)  ·  Brand (orange)  ·  # = Car 1,2…  ·  text under plate = color (approx)"
+    leg = "Car (orange) · Brand (blue) · Plate (amber) · # = Car 1,2,... · under plate = color"
     cv2.putText(
         canvas,
         leg,
@@ -883,13 +717,16 @@ def _brand_card_html(
     )
 
 
-def _body_color_card_html(label: str) -> str:
+def _body_color_card_html(label: str, pct: float = 0.0) -> str:
     hint = "Dominant color from detected car object"
     if label and label != "Unknown":
         pill = _result_pill("ok", "Estimate")
     else:
         pill = _result_pill("warn", "Unknown")
-    esc = html.escape(label or "Unknown")
+    shown = label or "Unknown"
+    if label and label != "Unknown" and pct > 0:
+        shown = f"{label} ({pct:.0f}%)"
+    esc = html.escape(shown)
     return (
         f'<div style="{_RCARD_CELL}">'
         f"{_result_card_title('Body color (OpenCV)')}"
@@ -944,6 +781,7 @@ def _build_results_table_html(paired_rows: list, brand_model) -> str:
         bl = brand["label"] if brand else ""
         bs = brand["score"] if brand else 0.0
         bc = plate.get("body_color", "Unknown")
+        bp = float(plate.get("body_color_pct", 0.0) or 0.0)
         ph = _plate_ocr_card_html(plate_txt, has_crop)
         bh = _brand_card_html(
             brand_model is not None,
@@ -951,7 +789,7 @@ def _build_results_table_html(paired_rows: list, brand_model) -> str:
             bs,
             weights_hint="models/carbrand/best.pt",
         )
-        ch = _body_color_card_html(bc)
+        ch = _body_color_card_html(bc, bp)
         chunks.append(
             f'<tr><td colspan="3" style="padding:22px 0 12px 0;border:none!important;border-width:0!important;">'
             f'<div style="font-size:1.08rem;font-weight:650;letter-spacing:0.03em;'
@@ -1117,7 +955,15 @@ if img_file:
                 )[0]
                 brands_local = extract_brands_left_to_right(brand_result_car, brand_model)
                 if brands_local:
-                    best_brand = max(brands_local, key=lambda b: b["score"])
+                    # Prefer confident, sufficiently large logos/features to reduce noisy tiny hits.
+                    def _brand_rank(b):
+                        bx1, by1, bx2, by2 = b["xyxy"]
+                        b_area = max(1.0, float((bx2 - bx1) * (by2 - by1)))
+                        c_area = max(1.0, float((x2 - x1) * (y2 - y1)))
+                        area_ratio = b_area / c_area
+                        return b["score"] * (0.8 + min(0.6, area_ratio * 8.0))
+
+                    best_brand = max(brands_local, key=_brand_rank)
                     bx1, by1, bx2, by2 = best_brand["xyxy"]
                     brand = {
                         "x_center": c["x_center"],
@@ -1137,6 +983,7 @@ if img_file:
             paired_rows,
             plate_model,
             car_model,
+            n_cars_raw=n_cars_raw,
         )
 
         n_shown = len(paired_rows)
