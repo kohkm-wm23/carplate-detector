@@ -53,6 +53,7 @@ MODELS_DIR = BASE_DIR / "models"
 
 PLATE_MODEL_PATH = MODELS_DIR / "carplate" / "best.pt"
 BRAND_MODEL_PATH = MODELS_DIR / "carbrand" / "best.pt"
+CAR_MODEL_PATH = MODELS_DIR / "carobject" / "best.pt"
 
 PROJECT_OUT = BASE_DIR / "outputs"
 PROJECT_OUT.mkdir(exist_ok=True)
@@ -84,6 +85,13 @@ def load_brand_model():
     if not BRAND_MODEL_PATH.exists():
         return None
     return YOLO(str(BRAND_MODEL_PATH))
+
+
+@st.cache_resource
+def load_car_model():
+    if not CAR_MODEL_PATH.exists():
+        return None
+    return YOLO(str(CAR_MODEL_PATH))
 
 
 @st.cache_resource
@@ -245,6 +253,38 @@ def enumerate_plates_left_to_right(frame_bgr: np.ndarray, plate_result, max_cars
     return rows, n_raw
 
 
+def enumerate_cars_left_to_right(frame_bgr: np.ndarray, car_result, max_cars: int) -> tuple:
+    """Car detections: keep up to max_cars by area, then sort left → right."""
+    boxes = None if car_result is None else car_result.boxes
+    if boxes is None or len(boxes) == 0:
+        return [], 0
+    xyxy_all = boxes.xyxy.cpu().numpy()
+    confs = boxes.conf.cpu().numpy()
+    clss = boxes.cls.cpu().numpy().astype(int)
+    rows = []
+    for i in range(len(boxes)):
+        x1, y1, x2, y2 = [int(v) for v in xyxy_all[i]]
+        if x2 <= x1 or y2 <= y1:
+            continue
+        area = float((x2 - x1) * (y2 - y1))
+        rows.append(
+            {
+                "x_center": 0.5 * (x1 + x2),
+                "xyxy": (x1, y1, x2, y2),
+                "conf": float(confs[i]),
+                "area": area,
+                "cls_id": int(clss[i]),
+            }
+        )
+    n_raw = len(rows)
+    mc = max(1, int(max_cars))
+    if len(rows) > mc:
+        rows.sort(key=lambda r: r["area"], reverse=True)
+        rows = rows[:mc]
+    rows.sort(key=lambda r: r["x_center"])
+    return rows, n_raw
+
+
 def extract_brands_left_to_right(brand_result, brand_model) -> list:
     """All brand boxes sorted by horizontal center (left → right)."""
     if brand_result is None or brand_result.boxes is None or len(brand_result.boxes) == 0:
@@ -297,6 +337,88 @@ def _body_paint_roi_xyxy(plate_xyxy: tuple, fh: int, fw: int):
     if (y2b - y1b) < 6 or (x2b - x1b) < 6:
         return None
     return (x1b, y1b, x2b, y2b)
+
+
+def _hsv_center_to_single_color_label(h: float, s: float, v: float) -> str:
+    """Single dominant color name (no mixed labels)."""
+    h, s, v = float(h), float(s), float(v)
+    if v < 38:
+        return "Black"
+    if s < 38:
+        if v > 200:
+            return "White"
+        if v > 125:
+            return "Gray"
+        return "Dark gray"
+    if h <= 10 or h >= 170:
+        return "Red"
+    if h <= 22:
+        return "Orange"
+    if h <= 35:
+        return "Yellow"
+    if h <= 85:
+        return "Green"
+    if h <= 130:
+        return "Blue"
+    if h <= 160:
+        return "Purple"
+    return "Brown"
+
+
+def estimate_body_color_from_car_crop(car_crop_bgr: np.ndarray) -> tuple:
+    """
+    Dominant body color from car crop via HSV k-means.
+    Returns (label, pct, sample_bgr).
+    """
+    if car_crop_bgr is None or car_crop_bgr.size < 30:
+        return "Unknown", 0.0, None
+    roi = car_crop_bgr
+    mh = max(roi.shape[0], roi.shape[1])
+    if mh > 260:
+        scale = 260.0 / mh
+        roi = cv2.resize(roi, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+
+    hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+    pixels = hsv.reshape(-1, 3).astype(np.float32)
+    n0 = pixels.shape[0]
+    if n0 < 20:
+        return "Unknown", 0.0, None
+
+    # Drop very dark/bright extremes to reduce shadow/highlight bias.
+    v_ch = pixels[:, 2]
+    mask = (v_ch > 18) & (v_ch < 248)
+    if np.count_nonzero(mask) > n0 * 0.20:
+        pixels = pixels[mask]
+    n = pixels.shape[0]
+    if n < 12:
+        return "Unknown", 0.0, None
+
+    k = 4 if n >= 100 else (3 if n >= 50 else 2)
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 24, 1.0)
+    try:
+        _comp, lbls, centers = cv2.kmeans(
+            np.ascontiguousarray(pixels),
+            k,
+            None,
+            criteria,
+            3,
+            cv2.KMEANS_PP_CENTERS,
+        )
+        labels = lbls.flatten().astype(int)
+        counts = np.bincount(labels, minlength=k)
+        dom = int(np.argmax(counts))
+        pct = 100.0 * float(counts[dom]) / max(1.0, float(np.sum(counts)))
+        ch, cs, cv = centers[dom]
+    except Exception:
+        ch, cs, cv = np.mean(pixels, axis=0)
+        pct = 100.0
+
+    label = _hsv_center_to_single_color_label(ch, cs, cv)
+    samp = cv2.cvtColor(
+        np.uint8([[[int(round(ch)), int(round(cs)), int(round(cv))]]]),
+        cv2.COLOR_HSV2BGR,
+    )[0, 0]
+    return label, pct, (int(samp[0]), int(samp[1]), int(samp[2]))
 
 
 def _hsv_center_to_color_label(h: float, s: float, v: float) -> str:
@@ -536,6 +658,74 @@ def _draw_plate_car_index_badges(im_bgr: np.ndarray, plates_ltr: list) -> None:
         )
 
 
+def _draw_car_rows_bgr(im_bgr: np.ndarray, cars_ltr: list, names) -> None:
+    col = (240, 110, 30)
+    for i, c in enumerate(cars_ltr, start=1):
+        x1, y1, x2, y2 = c["xyxy"]
+        cf = c["conf"]
+        cid = c.get("cls_id", 0)
+        lab = _cls_name(names, cid)
+        label = f"car {lab} {cf:.2f}"
+        cv2.rectangle(im_bgr, (x1, y1), (x2, y2), col, 2)
+        cv2.putText(
+            im_bgr,
+            label,
+            (x1, max(y1 - 10, 20)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.52,
+            col,
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            im_bgr,
+            str(i),
+            (x1 + 4, min(y2 - 8, y1 + 24)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.84,
+            col,
+            2,
+            cv2.LINE_AA,
+        )
+
+
+def draw_car_first_detection_plot(
+    frame_bgr: np.ndarray,
+    car_rows: list,
+    plate_model,
+    car_model,
+) -> np.ndarray:
+    """Single BGR image: kept cars + plate overlays + car index."""
+    canvas = frame_bgr.copy()
+    h = canvas.shape[0]
+
+    if car_rows:
+        cars_ltr = [r["car"] for r in car_rows]
+        _draw_car_rows_bgr(canvas, cars_ltr, car_model.names)
+
+    plates = []
+    for r in car_rows:
+        p = r["plate"]
+        if p.get("xyxy") is not None:
+            plates.append(p)
+    if plates:
+        _draw_plate_rows_bgr(canvas, plates, plate_model.names)
+        _draw_body_color_captions(canvas, plates)
+
+    leg = "Car (orange) · Plate (amber) · # = Car 1,2,... · text under plate = dominant color"
+    cv2.putText(
+        canvas,
+        leg,
+        (8, h - 12),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.5,
+        (220, 220, 220),
+        1,
+        cv2.LINE_AA,
+    )
+    return canvas
+
+
 def draw_combined_detection_plot(
     frame_bgr: np.ndarray,
     brand_result,
@@ -654,7 +844,7 @@ def _brand_card_html(
     score: float,
     weights_hint: str = "",
 ) -> str:
-    title = "Car brand"
+    title = "Car brand / model"
     head = _result_card_title(title)
     grow = '<div style="flex:1;min-height:4px;"></div>'
     if not deployed:
@@ -694,7 +884,7 @@ def _brand_card_html(
 
 
 def _body_color_card_html(label: str) -> str:
-    hint = "OpenCV: Lightning sensitive"
+    hint = "Dominant color from detected car object"
     if label and label != "Unknown":
         pill = _result_pill("ok", "Estimate")
     else:
@@ -788,27 +978,29 @@ def _build_results_table_html(paired_rows: list, brand_model) -> str:
     return "".join(chunks)
 
 
-def render_results_section(paired_rows: list, brand_model):
-    """paired_rows: from pair_plates_with_brands, each with plate_txt set on plate dict."""
+def render_results_section(paired_rows: list, brand_model, n_cars_raw: int = 0):
+    """One row per car, with optional plate/brand/color details."""
     st.markdown("### Results")
     st.markdown(
         "<hr style='margin:0.4rem 0 1.2rem 0;border:none;border-top:1px solid rgba(128,132,149,0.2);' />",
         unsafe_allow_html=True,
     )
+    n_rows = len(paired_rows)
+    if n_cars_raw > 0:
+        kept_part = f" · Showing {n_rows}" if n_rows != n_cars_raw else ""
+        st.caption(f"Total cars detected: {n_cars_raw}{kept_part}. Ordered left → right.")
 
     if not paired_rows:
         st.markdown(
             f'<div style="{_RCARD_BOX} min-height:100px;">'
-            f"{_result_card_title('License plate')}"
+            f"{_result_card_title('Car objects')}"
             f'<div style="margin-bottom:10px;">{_result_pill("warn", "Not detected")}</div>'
             f'<p style="margin:0;font-size:15px;line-height:1.5;color:rgba(128,132,149,0.9);">'
-            "No plate regions were found on this upload.</p>"
+            "No car objects were found on this upload.</p>"
             f"</div>",
             unsafe_allow_html=True,
         )
         return
-
-    st.caption("Cars are ordered left → right by plate position (same as numbers on the detection image).")
 
     st.markdown(_build_results_table_html(paired_rows, brand_model), unsafe_allow_html=True)
 
@@ -817,6 +1009,7 @@ def render_results_section(paired_rows: list, brand_model):
 # Load models + UI
 # -----------------------------
 try:
+    car_model = load_car_model()
     plate_model = load_plate_model()
     brand_model = load_brand_model()
     ocr_engine = load_ocr()
@@ -825,6 +1018,14 @@ except Exception as e:
     st.stop()
 
 st.sidebar.header("Settings")
+car_conf = st.sidebar.slider(
+    "Car object confidence",
+    0.0,
+    1.0,
+    0.25,
+    0.05,
+    help="YOLO threshold for the car-object model (first stage).",
+)
 plate_conf = st.sidebar.slider(
     "Plate detection confidence",
     0.0,
@@ -843,12 +1044,12 @@ det_conf = st.sidebar.slider(
 )
 imgsz = st.sidebar.selectbox("Image Size (imgsz)", [320, 480, 640, 960, 1280], index=4)
 max_cars = st.sidebar.number_input(
-    "Max cars (plates)",
+    "Max cars (objects)",
     min_value=1,
     max_value=15,
     value=2,
     step=1,
-    help="Uses the largest plate boxes in the frame (drops smaller / usually farther cars), then orders left→right.",
+    help="Keeps largest car boxes in the frame, then orders left→right.",
 )
 
 st.subheader("Upload an image")
@@ -872,58 +1073,93 @@ if img_file:
         else:
             st.error("Failed to read image.")
     else:
-        plate_result = plate_model.predict(source=frame, conf=plate_conf, imgsz=imgsz, verbose=False)[0]
-        plates_ltr, n_plates_raw = enumerate_plates_left_to_right(frame, plate_result, max_cars)
-        for p in plates_ltr:
-            cr = p.get("crop")
-            p["plate_txt"] = run_ocr_stable(cr, ocr_engine) if cr is not None else ""
-            clab, cbgr = estimate_body_color_from_plate(frame, p["xyxy"])
-            p["body_color"] = clab
-            p["body_color_bgr"] = cbgr
+        if car_model is None:
+            st.error("Car-object model not found at `models/carobject/best.pt`.")
+            st.stop()
 
-        brand_use_conf = max(0.2, det_conf)
-        brand_result = None
-        if brand_model is not None:
-            brand_result = brand_model.predict(
-                source=frame, conf=brand_use_conf, imgsz=imgsz, verbose=False
-            )[0]
+        car_result = car_model.predict(source=frame, conf=car_conf, imgsz=imgsz, verbose=False)[0]
+        cars_ltr, n_cars_raw = enumerate_cars_left_to_right(frame, car_result, max_cars)
 
-        brands_ltr = (
-            extract_brands_left_to_right(brand_result, brand_model)
-            if brand_model is not None and brand_result is not None
-            else []
-        )
-        paired_rows = pair_plates_with_brands(plates_ltr, brands_ltr)
+        paired_rows = []
+        for c in cars_ltr:
+            x1, y1, x2, y2 = c["xyxy"]
+            car_crop = frame[y1:y2, x1:x2]
+            if car_crop is None or car_crop.size == 0:
+                continue
 
-        combined_det = draw_combined_detection_plot(
+            plate = {
+                "x_center": c["x_center"],
+                "xyxy": None,
+                "crop": None,
+                "conf": 0.0,
+                "area": 0.0,
+                "cls_id": 0,
+                "plate_txt": "",
+            }
+            plate_result = plate_model.predict(source=car_crop, conf=plate_conf, imgsz=imgsz, verbose=False)[0]
+            local_plates, _ = enumerate_plates_left_to_right(car_crop, plate_result, 1)
+            if local_plates:
+                lp = local_plates[0]
+                lx1, ly1, lx2, ly2 = lp["xyxy"]
+                plate["xyxy"] = (x1 + lx1, y1 + ly1, x1 + lx2, y1 + ly2)
+                plate["crop"] = lp.get("crop")
+                plate["conf"] = lp.get("conf", 0.0)
+                plate["area"] = lp.get("area", 0.0)
+                plate["cls_id"] = lp.get("cls_id", 0)
+                plate["plate_txt"] = (
+                    run_ocr_stable(plate["crop"], ocr_engine) if plate["crop"] is not None else ""
+                )
+
+            brand = None
+            if brand_model is not None:
+                brand_result_car = brand_model.predict(
+                    source=car_crop, conf=max(0.2, det_conf), imgsz=imgsz, verbose=False
+                )[0]
+                brands_local = extract_brands_left_to_right(brand_result_car, brand_model)
+                if brands_local:
+                    best_brand = max(brands_local, key=lambda b: b["score"])
+                    bx1, by1, bx2, by2 = best_brand["xyxy"]
+                    brand = {
+                        "x_center": c["x_center"],
+                        "label": best_brand["label"],
+                        "score": best_brand["score"],
+                        "xyxy": (x1 + bx1, y1 + by1, x1 + bx2, y1 + by2),
+                    }
+
+            clab, cpct, cbgr = estimate_body_color_from_car_crop(car_crop)
+            plate["body_color"] = clab
+            plate["body_color_bgr"] = cbgr
+            plate["body_color_pct"] = cpct
+            paired_rows.append({"car": c, "plate": plate, "brand": brand})
+
+        combined_det = draw_car_first_detection_plot(
             frame,
-            brand_result,
+            paired_rows,
             plate_model,
-            brand_model,
-            plates_ltr=plates_ltr,
+            car_model,
         )
 
-        n_plates = len(plates_ltr)
-        if n_plates_raw:
-            kept = f"{n_plates} kept" + (
-                f" of {n_plates_raw} detected" if n_plates_raw != n_plates else ""
+        n_shown = len(paired_rows)
+        if n_cars_raw:
+            kept = f"{n_shown} kept" + (
+                f" of {n_cars_raw} detected" if n_cars_raw != n_shown else ""
             )
             st.sidebar.caption(
                 f"{kept} (left→right, max {max_cars}). OCR min crop {MIN_PLATE_CROP_W}×{MIN_PLATE_CROP_H} px."
             )
         else:
-            st.sidebar.caption("No plates at this plate confidence.")
+            st.sidebar.caption("No cars at this car confidence.")
 
         st.subheader("Detections")
         st.image(
             combined_det[:, :, ::-1],
             caption=(
-                f"Combined: plates kept (max {max_cars} by size) + brand · "
-                f"plate_conf={plate_conf}, imgsz={imgsz}"
+                f"Combined: car objects + per-car plate/brand/color · "
+                f"car_conf={car_conf}, plate_conf={plate_conf}, imgsz={imgsz}"
             ),
             use_column_width=True,
         )
         if brand_model is None:
-            st.caption("Brand head not loaded — only plate boxes are drawn.")
+            st.caption("Brand head not loaded — car + plate + color are still shown.")
 
-        render_results_section(paired_rows, brand_model)
+        render_results_section(paired_rows, brand_model, n_cars_raw=n_cars_raw)
