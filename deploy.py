@@ -827,10 +827,19 @@ def render_results_section(paired_rows: list, brand_model, n_cars_raw: int = 0):
     if n_cars_raw > 0:
         st.markdown(
             (
-                '<div style="margin:0 0 10px 0;line-height:1.45;">'
-                f'<div style="font-size:1.05rem;font-weight:700;">Total cars detected: {n_cars_raw}</div>'
-                f'<div style="font-size:1.05rem;font-weight:700;">Showing: {n_rows}</div>'
-                '<div style="font-size:1.0rem;font-weight:600;opacity:0.95;">Order from left to right.</div>'
+                '<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;'
+                'margin:0 0 8px 0;">'
+                f'<div style="{_RCARD_BOX} padding:0.75rem 1rem;">'
+                f'{_result_card_title("Total cars detected")}'
+                f'<p style="margin:0;font-size:1.5rem;font-weight:800;line-height:1.2;">{n_cars_raw}</p>'
+                '</div>'
+                f'<div style="{_RCARD_BOX} padding:0.75rem 1rem;">'
+                f'{_result_card_title("Showing")}'
+                f'<p style="margin:0;font-size:1.5rem;font-weight:800;line-height:1.2;">{n_rows}</p>'
+                '</div>'
+                '</div>'
+                '<p style="margin:0 0 10px 0;font-size:12px;line-height:1.4;'
+                'color:rgba(128,132,149,0.92);">Order from left to right.</p>'
                 "</div>"
             ),
             unsafe_allow_html=True,
