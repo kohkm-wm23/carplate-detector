@@ -825,8 +825,16 @@ def render_results_section(paired_rows: list, brand_model, n_cars_raw: int = 0):
     )
     n_rows = len(paired_rows)
     if n_cars_raw > 0:
-        kept_part = f" · Showing {n_rows}" if n_rows != n_cars_raw else ""
-        st.caption(f"Total cars detected: {n_cars_raw}{kept_part}. Ordered left → right.")
+        st.markdown(
+            (
+                '<div style="margin:0 0 10px 0;line-height:1.45;">'
+                f'<div style="font-size:1.05rem;font-weight:700;">Total cars detected: {n_cars_raw}</div>'
+                f'<div style="font-size:1.05rem;font-weight:700;">Showing: {n_rows}</div>'
+                '<div style="font-size:1.0rem;font-weight:600;opacity:0.95;">Order from left to right.</div>'
+                "</div>"
+            ),
+            unsafe_allow_html=True,
+        )
 
     if not paired_rows:
         st.markdown(
