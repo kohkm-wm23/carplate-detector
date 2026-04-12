@@ -54,6 +54,11 @@ CAR_MODEL_PATH = MODELS_DIR / "carobject" / "best.pt"
 
 PROJECT_OUT = BASE_DIR / "outputs"
 PROJECT_OUT.mkdir(exist_ok=True)
+METRICS_IMAGES = [
+    ("Car Plate Metrics", PROJECT_OUT / "metrics_car_plate.png"),
+    ("Car Object Metrics", PROJECT_OUT / "metrics_car_object.png"),
+    ("Brand Logo Metrics", PROJECT_OUT / "metrics_brand_logo.png"),
+]
 
 PLATE_REGEX = re.compile(r"^[A-Z]{1,3}[0-9]{1,4}[A-Z]?$")
 
@@ -832,6 +837,33 @@ def render_results_section(paired_rows: list, brand_model, n_cars_raw: int = 0):
     st.markdown(_build_results_table_html(paired_rows, brand_model), unsafe_allow_html=True)
 
 
+def render_model_comparison_tab():
+    st.markdown("### Model Comparison")
+    st.caption("Static performance charts for YOLOv8 vs RetinaNet vs Faster R-CNN.")
+
+    if not any(path.exists() for _, path in METRICS_IMAGES):
+        st.info(
+            "No comparison graphs found in `outputs/`. Run `python resultGraph.py` to generate them."
+        )
+        return
+
+    top_left, top_right = st.columns(2)
+    for idx, (title, image_path) in enumerate(METRICS_IMAGES[:2]):
+        with (top_left if idx == 0 else top_right):
+            st.markdown(f"#### {title}")
+            if image_path.exists():
+                st.image(str(image_path), use_column_width=True)
+            else:
+                st.warning(f"Missing graph: `{image_path.name}`")
+
+    st.markdown("#### Full Comparison Snapshot")
+    last_title, last_path = METRICS_IMAGES[2]
+    if last_path.exists():
+        st.image(str(last_path), use_column_width=True, caption=last_title)
+    else:
+        st.warning(f"Missing graph: `{last_path.name}`")
+
+
 #Load models + UI
 try:
     car_model = load_car_model()
@@ -984,16 +1016,22 @@ if img_file:
         else:
             st.sidebar.caption("No cars at this car confidence.")
 
-        st.subheader("Detections")
-        st.image(
-            combined_det[:, :, ::-1],
-            caption=(
-                f"Combined: car objects + per-car plate/brand/color · "
-                f"car_conf={car_conf}, plate_conf={plate_conf}, imgsz={imgsz}"
-            ),
-            use_column_width=True,
-        )
-        if brand_model is None:
-            st.caption("Brand head not loaded — car + plate + color are still shown.")
+        tab_results, tab_comparison = st.tabs(["Detection & Results", "Model Comparison"])
 
-        render_results_section(paired_rows, brand_model, n_cars_raw=n_cars_raw)
+        with tab_results:
+            st.subheader("Detections")
+            st.image(
+                combined_det[:, :, ::-1],
+                caption=(
+                    f"Combined: car objects + per-car plate/brand/color · "
+                    f"car_conf={car_conf}, plate_conf={plate_conf}, imgsz={imgsz}"
+                ),
+                use_column_width=True,
+            )
+            if brand_model is None:
+                st.caption("Brand head not loaded — car + plate + color are still shown.")
+
+            render_results_section(paired_rows, brand_model, n_cars_raw=n_cars_raw)
+
+        with tab_comparison:
+            render_model_comparison_tab()

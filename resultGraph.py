@@ -1,9 +1,9 @@
 """
 Generate three bar charts (plate / car object / brand logo).
-Layout: X-axis = metrics; grouped bars = one color per model (YOLOv8, SSD, Faster R-CNN).
+Layout: X-axis = metrics; grouped bars = one color per model (YOLOv8, RetinaNet, Faster R-CNN).
 
 YOLOv8 / Faster R-CNN: test-set metrics as below.
-SSD column: teammate eval (eval_plate.py / eval_car.py / eval_brand.py). F1 = 2PR/(P+R); 0 if P+R=0.
+RetinaNet column: teammate eval (eval_plate.py / eval_car.py / eval_brand.py). F1 = 2PR/(P+R); 0 if P+R=0.
 
 Run: python resultGraph.py
 Outputs: outputs/metrics_car_plate.png, metrics_car_object.png, metrics_brand_logo.png
@@ -15,7 +15,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 _OUT_DIR = Path(__file__).resolve().parent / "outputs"
-_MODELS = ["YOLOv8", "SSD", "Faster R-CNN"]
+_MODELS = ["YOLOv8", "RetinaNet", "Faster R-CNN"]
 # Distinct colors per model (similar idea to grouped comparison charts)
 _MODEL_COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c"]
 
@@ -95,23 +95,23 @@ def _save_metrics_bar_chart(
     return out_path
 
 
-# Order per list: YOLOv8, SSD, Faster R-CNN
-# SSD: plate 120 img | car 23 img | brand 100 img (eval scripts). F1 computed as 2*P*R/(P+R).
+# Order per list: YOLOv8, RetinaNet, Faster R-CNN
+# RetinaNet: plate 120 img | car 23 img | brand 100 img (eval scripts). F1 computed as 2*P*R/(P+R).
 
-PLATE_PRECISION = [0.956, 0.0013, 0.7233]
-PLATE_RECALL = [0.937, 0.0019, 0.7651]
-PLATE_F1 = [0.946, 0.0015, 0.7437]
-PLATE_MAP50 = [0.965, 0.0115, 0.9347]
+PLATE_PRECISION = [0.956, 0.9531, 0.7233]
+PLATE_RECALL = [0.937, 0.7667, 0.7651]
+PLATE_F1 = [0.946, 0.8498, 0.7437]
+PLATE_MAP50 = [0.965, 0.9531, 0.9347]
 
-CAR_OBJECT_PRECISION = [0.996, 0.0024, 0.9213]
-CAR_OBJECT_RECALL = [0.926, 0.0111, 0.9333]
-CAR_OBJECT_F1 = [0.960, 0.0039, 0.9273]
-CAR_OBJECT_MAP50 = [0.99, 0.0158, 0.9960]
+CAR_OBJECT_PRECISION = [0.996, 0.9553, 0.9213]
+CAR_OBJECT_RECALL = [0.926, 0.9111, 0.9333]
+CAR_OBJECT_F1 = [0.960, 0.9327, 0.9273]
+CAR_OBJECT_MAP50 = [0.99, 0.9553, 0.9960]
 
-BRAND_PRECISION = [0.925, 0.0, 0.8069]
-BRAND_RECALL = [0.869, 0.0, 0.8417]
-BRAND_F1 = [0.896, 0.0, 0.8239]
-BRAND_MAP50 = [0.955, 0.0, 0.9673]
+BRAND_PRECISION = [0.925, 0.8476, 0.8069]
+BRAND_RECALL = [0.869, 0.8194, 0.8417]
+BRAND_F1 = [0.896, 0.8333, 0.8239]
+BRAND_MAP50 = [0.955, 0.8476, 0.9673]
 
 
 def main() -> None:
