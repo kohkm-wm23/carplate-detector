@@ -838,8 +838,50 @@ def render_results_section(paired_rows: list, brand_model, n_cars_raw: int = 0):
 
 
 def render_model_comparison_tab():
-    st.markdown("### Model Comparison")
-    st.caption("Static performance charts for YOLOv8 vs RetinaNet vs Faster R-CNN.")
+    st.markdown(
+        """
+        <div style="
+            border:1px solid rgba(128,132,149,0.24);
+            border-radius:16px;
+            padding:1rem 1.1rem;
+            background:linear-gradient(135deg, rgba(42,54,86,0.30), rgba(20,24,38,0.28));
+            margin-bottom:0.8rem;">
+            <p style="margin:0 0 6px 0;font-size:12px;letter-spacing:0.12em;font-weight:700;color:rgba(168,176,198,0.95);">
+                MODEL RESULTS DASHBOARD
+            </p>
+            <p style="margin:0;font-size:1.25rem;font-weight:760;line-height:1.25;">
+                Cross-model Performance Comparison
+            </p>
+            <p style="margin:8px 0 0 0;font-size:13px;line-height:1.45;color:rgba(210,216,231,0.90);">
+                Side-by-side score charts across three detection tasks using Precision, Recall, F1-score, and mAP@0.5.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    mdl1, mdl2, mdl3 = st.columns(3)
+    with mdl1:
+        st.markdown(
+            '<div style="border:1px solid rgba(31,119,180,0.35);border-radius:12px;padding:0.62rem 0.75rem;'
+            'background:rgba(31,119,180,0.09);font-size:13px;font-weight:650;">'
+            "YOLOv8</div>",
+            unsafe_allow_html=True,
+        )
+    with mdl2:
+        st.markdown(
+            '<div style="border:1px solid rgba(255,127,14,0.35);border-radius:12px;padding:0.62rem 0.75rem;'
+            'background:rgba(255,127,14,0.09);font-size:13px;font-weight:650;">'
+            "RetinaNet</div>",
+            unsafe_allow_html=True,
+        )
+    with mdl3:
+        st.markdown(
+            '<div style="border:1px solid rgba(44,160,44,0.35);border-radius:12px;padding:0.62rem 0.75rem;'
+            'background:rgba(44,160,44,0.09);font-size:13px;font-weight:650;">'
+            "Faster R-CNN</div>",
+            unsafe_allow_html=True,
+        )
 
     if not any(path.exists() for _, path in METRICS_IMAGES):
         st.info(
@@ -848,15 +890,54 @@ def render_model_comparison_tab():
         return
 
     top_left, top_right = st.columns(2)
+    descriptions = {
+        "Car Plate Metrics": "License-plate detection benchmark across all three models.",
+        "Car Object Metrics": "Vehicle object detection benchmark under the same metric set.",
+        "Brand Logo Metrics": "Brand/logo classification detection comparison view.",
+    }
     for idx, (title, image_path) in enumerate(METRICS_IMAGES[:2]):
         with (top_left if idx == 0 else top_right):
-            st.markdown(f"#### {title}")
+            st.markdown(
+                f"""
+                <div style="
+                    border:1px solid rgba(128,132,149,0.24);
+                    border-radius:14px;
+                    padding:0.8rem 0.95rem;
+                    margin-top:0.7rem;
+                    background:rgba(128,132,149,0.06);">
+                    <p style="margin:0;font-size:13px;letter-spacing:0.08em;font-weight:700;color:rgba(168,176,198,0.92);">
+                        {html.escape(title.upper())}
+                    </p>
+                    <p style="margin:6px 0 0 0;font-size:12px;color:rgba(192,199,214,0.90);">
+                        {html.escape(descriptions.get(title, ""))}
+                    </p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
             if image_path.exists():
                 st.image(str(image_path), use_column_width=True)
             else:
                 st.warning(f"Missing graph: `{image_path.name}`")
 
-    st.markdown("#### Full Comparison Snapshot")
+    st.markdown(
+        """
+        <div style="
+            border:1px solid rgba(128,132,149,0.24);
+            border-radius:14px;
+            padding:0.8rem 0.95rem;
+            margin-top:0.9rem;
+            background:rgba(128,132,149,0.06);">
+            <p style="margin:0;font-size:13px;letter-spacing:0.08em;font-weight:700;color:rgba(168,176,198,0.92);">
+                BRAND LOGO METRICS
+            </p>
+            <p style="margin:6px 0 0 0;font-size:12px;color:rgba(192,199,214,0.90);">
+                Full-width view to make label values and bar heights easier to inspect.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     last_title, last_path = METRICS_IMAGES[2]
     if last_path.exists():
         st.image(str(last_path), use_column_width=True, caption=last_title)
