@@ -662,7 +662,7 @@ def _brand_card_html(
     score: float,
     weights_hint: str = "",
 ) -> str:
-    title = "Car brand / model"
+    title = "Car brand"
     head = _result_card_title(title)
     grow = '<div style="flex:1;min-height:4px;"></div>'
     if not deployed:
@@ -713,7 +713,7 @@ def _body_color_card_html(label: str, pct: float = 0.0) -> str:
     esc = html.escape(shown)
     return (
         f'<div style="{_RCARD_CELL}">'
-        f"{_result_card_title('Body color (OpenCV)')}"
+        f"{_result_card_title('Body color')}"
         f'<div style="margin-bottom:10px;">{pill}</div>'
         f'<p style="margin:0 0 4px 0;font-size:1.15rem;font-weight:750;line-height:1.35;'
         f'word-break:break-word;overflow-wrap:anywhere;">{esc}</p>'
