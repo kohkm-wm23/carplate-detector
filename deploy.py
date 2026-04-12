@@ -1103,14 +1103,16 @@ with tab_results:
                 st.sidebar.caption("No cars at this car confidence.")
 
             st.subheader("Detections")
-            st.image(
-                combined_det[:, :, ::-1],
-                caption=(
-                    f"Combined: car objects + per-car plate/brand/color · "
-                    f"car_conf={car_conf}, plate_conf={plate_conf}, imgsz={imgsz}"
-                ),
-                use_column_width=True,
-            )
+            _, det_col, _ = st.columns([0.08, 0.84, 0.08])
+            with det_col:
+                st.image(
+                    combined_det[:, :, ::-1],
+                    caption=(
+                        f"Combined: car objects + per-car plate/brand/color · "
+                        f"car_conf={car_conf}, plate_conf={plate_conf}, imgsz={imgsz}"
+                    ),
+                    use_column_width=True,
+                )
             if brand_model is None:
                 st.caption("Brand head not loaded — car + plate + color are still shown.")
 
