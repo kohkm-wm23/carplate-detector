@@ -990,116 +990,118 @@ max_cars = st.sidebar.number_input(
     help="Keeps largest car boxes in the frame, then orders left→right.",
 )
 
-st.subheader("Upload an image")
-img_file = st.file_uploader(
-    "Choose an image",
-    type=["jpg", "jpeg", "png", "heic", "heif"],
-    key="img_uploader",
-    help="iPhone photos: use .heic / .heif or convert to JPEG in Photos before upload.",
-)
+tab_results, tab_comparison = st.tabs(["Detection & Results", "Model Comparison"])
 
-if img_file:
-    frame = decode_upload_to_bgr(img_file)
+with tab_results:
+    st.subheader("Upload an image")
+    img_file = st.file_uploader(
+        "Choose an image",
+        type=["jpg", "jpeg", "png", "heic", "heif"],
+        key="img_uploader",
+        help="iPhone photos: use .heic / .heif or convert to JPEG in Photos before upload.",
+    )
 
-    if frame is None:
-        suf = Path(img_file.name or "").suffix.lower()
-        if suf in (".heic", ".heif"):
-            st.error(
-                "Could not read this HEIC/HEIF file. Install **pillow-heif** "
-                "(`pip install pillow-heif`, also in requirements.txt), restart the app, and try again."
-            )
-        else:
-            st.error("Failed to read image.")
-    else:
-        if car_model is None:
-            st.error("Car-object model not found at `models/carobject/best.pt`.")
-            st.stop()
+    if img_file:
+        frame = decode_upload_to_bgr(img_file)
 
-        car_result = car_model.predict(source=frame, conf=car_conf, imgsz=imgsz, verbose=False)[0]
-        cars_ltr, n_cars_raw = enumerate_cars_left_to_right(frame, car_result, max_cars)
-
-        paired_rows = []
-        for c in cars_ltr:
-            x1, y1, x2, y2 = c["xyxy"]
-            car_crop = frame[y1:y2, x1:x2]
-            if car_crop is None or car_crop.size == 0:
-                continue
-
-            plate = {
-                "x_center": c["x_center"],
-                "xyxy": None,
-                "crop": None,
-                "conf": 0.0,
-                "area": 0.0,
-                "cls_id": 0,
-                "plate_txt": "",
-            }
-            plate_result = plate_model.predict(source=car_crop, conf=plate_conf, imgsz=imgsz, verbose=False)[0]
-            local_plates, _ = enumerate_plates_left_to_right(car_crop, plate_result, 1)
-            if local_plates:
-                lp = local_plates[0]
-                lx1, ly1, lx2, ly2 = lp["xyxy"]
-                plate["xyxy"] = (x1 + lx1, y1 + ly1, x1 + lx2, y1 + ly2)
-                plate["crop"] = lp.get("crop")
-                plate["conf"] = lp.get("conf", 0.0)
-                plate["area"] = lp.get("area", 0.0)
-                plate["cls_id"] = lp.get("cls_id", 0)
-                plate["plate_txt"] = (
-                    run_ocr_stable(plate["crop"], ocr_engine) if plate["crop"] is not None else ""
+        if frame is None:
+            suf = Path(img_file.name or "").suffix.lower()
+            if suf in (".heic", ".heif"):
+                st.error(
+                    "Could not read this HEIC/HEIF file. Install **pillow-heif** "
+                    "(`pip install pillow-heif`, also in requirements.txt), restart the app, and try again."
                 )
-
-            brand = None
-            if brand_model is not None:
-                brand_result_car = brand_model.predict(
-                    source=car_crop, conf=max(0.2, det_conf), imgsz=imgsz, verbose=False
-                )[0]
-                brands_local = extract_brands_left_to_right(brand_result_car, brand_model)
-                if brands_local:
-                    # Prefer confident, sufficiently large logos/features to reduce noisy tiny hits.
-                    def _brand_rank(b):
-                        bx1, by1, bx2, by2 = b["xyxy"]
-                        b_area = max(1.0, float((bx2 - bx1) * (by2 - by1)))
-                        c_area = max(1.0, float((x2 - x1) * (y2 - y1)))
-                        area_ratio = b_area / c_area
-                        return b["score"] * (0.8 + min(0.6, area_ratio * 8.0))
-
-                    best_brand = max(brands_local, key=_brand_rank)
-                    bx1, by1, bx2, by2 = best_brand["xyxy"]
-                    brand = {
-                        "x_center": c["x_center"],
-                        "label": best_brand["label"],
-                        "score": best_brand["score"],
-                        "xyxy": (x1 + bx1, y1 + by1, x1 + bx2, y1 + by2),
-                    }
-
-            clab, cpct, cbgr = estimate_body_color_from_car_crop(car_crop)
-            plate["body_color"] = clab
-            plate["body_color_bgr"] = cbgr
-            plate["body_color_pct"] = cpct
-            paired_rows.append({"car": c, "plate": plate, "brand": brand})
-
-        combined_det = draw_car_first_detection_plot(
-            frame,
-            paired_rows,
-            plate_model,
-            car_model,
-            n_cars_raw=n_cars_raw,
-        )
-
-        n_shown = len(paired_rows)
-        if n_cars_raw:
-            kept = f"{n_shown} kept" + (
-                f" of {n_cars_raw} detected" if n_cars_raw != n_shown else ""
-            )
-            st.sidebar.caption(
-                f"{kept} (left→right, max {max_cars}). OCR min crop {MIN_PLATE_CROP_W}×{MIN_PLATE_CROP_H} px."
-            )
+            else:
+                st.error("Failed to read image.")
         else:
-            st.sidebar.caption("No cars at this car confidence.")
+            if car_model is None:
+                st.error("Car-object model not found at `models/carobject/best.pt`.")
+                st.stop()
 
-        tab_results, tab_comparison = st.tabs(["Detection & Results", "Model Comparison"])
+            car_result = car_model.predict(source=frame, conf=car_conf, imgsz=imgsz, verbose=False)[0]
+            cars_ltr, n_cars_raw = enumerate_cars_left_to_right(frame, car_result, max_cars)
 
-        with tab_results:
+            paired_rows = []
+            for c in cars_ltr:
+                x1, y1, x2, y2 = c["xyxy"]
+                car_crop = frame[y1:y2, x1:x2]
+                if car_crop is None or car_crop.size == 0:
+                    continue
+
+                plate = {
+                    "x_center": c["x_center"],
+                    "xyxy": None,
+                    "crop": None,
+                    "conf": 0.0,
+                    "area": 0.0,
+                    "cls_id": 0,
+                    "plate_txt": "",
+                }
+                plate_result = plate_model.predict(
+                    source=car_crop, conf=plate_conf, imgsz=imgsz, verbose=False
+                )[0]
+                local_plates, _ = enumerate_plates_left_to_right(car_crop, plate_result, 1)
+                if local_plates:
+                    lp = local_plates[0]
+                    lx1, ly1, lx2, ly2 = lp["xyxy"]
+                    plate["xyxy"] = (x1 + lx1, y1 + ly1, x1 + lx2, y1 + ly2)
+                    plate["crop"] = lp.get("crop")
+                    plate["conf"] = lp.get("conf", 0.0)
+                    plate["area"] = lp.get("area", 0.0)
+                    plate["cls_id"] = lp.get("cls_id", 0)
+                    plate["plate_txt"] = (
+                        run_ocr_stable(plate["crop"], ocr_engine) if plate["crop"] is not None else ""
+                    )
+
+                brand = None
+                if brand_model is not None:
+                    brand_result_car = brand_model.predict(
+                        source=car_crop, conf=max(0.2, det_conf), imgsz=imgsz, verbose=False
+                    )[0]
+                    brands_local = extract_brands_left_to_right(brand_result_car, brand_model)
+                    if brands_local:
+                        # Prefer confident, sufficiently large logos/features to reduce noisy tiny hits.
+                        def _brand_rank(b):
+                            bx1, by1, bx2, by2 = b["xyxy"]
+                            b_area = max(1.0, float((bx2 - bx1) * (by2 - by1)))
+                            c_area = max(1.0, float((x2 - x1) * (y2 - y1)))
+                            area_ratio = b_area / c_area
+                            return b["score"] * (0.8 + min(0.6, area_ratio * 8.0))
+
+                        best_brand = max(brands_local, key=_brand_rank)
+                        bx1, by1, bx2, by2 = best_brand["xyxy"]
+                        brand = {
+                            "x_center": c["x_center"],
+                            "label": best_brand["label"],
+                            "score": best_brand["score"],
+                            "xyxy": (x1 + bx1, y1 + by1, x1 + bx2, y1 + by2),
+                        }
+
+                clab, cpct, cbgr = estimate_body_color_from_car_crop(car_crop)
+                plate["body_color"] = clab
+                plate["body_color_bgr"] = cbgr
+                plate["body_color_pct"] = cpct
+                paired_rows.append({"car": c, "plate": plate, "brand": brand})
+
+            combined_det = draw_car_first_detection_plot(
+                frame,
+                paired_rows,
+                plate_model,
+                car_model,
+                n_cars_raw=n_cars_raw,
+            )
+
+            n_shown = len(paired_rows)
+            if n_cars_raw:
+                kept = f"{n_shown} kept" + (
+                    f" of {n_cars_raw} detected" if n_cars_raw != n_shown else ""
+                )
+                st.sidebar.caption(
+                    f"{kept} (left→right, max {max_cars}). OCR min crop {MIN_PLATE_CROP_W}×{MIN_PLATE_CROP_H} px."
+                )
+            else:
+                st.sidebar.caption("No cars at this car confidence.")
+
             st.subheader("Detections")
             st.image(
                 combined_det[:, :, ::-1],
@@ -1113,6 +1115,8 @@ if img_file:
                 st.caption("Brand head not loaded — car + plate + color are still shown.")
 
             render_results_section(paired_rows, brand_model, n_cars_raw=n_cars_raw)
+    else:
+        st.info("Upload an image to run detection and view per-car results.")
 
-        with tab_comparison:
-            render_model_comparison_tab()
+with tab_comparison:
+    render_model_comparison_tab()
