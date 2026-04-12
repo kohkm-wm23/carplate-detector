@@ -42,8 +42,12 @@ def decode_upload_to_bgr(uploaded_file) -> np.ndarray | None:
     return cv2.imdecode(buf, cv2.IMREAD_COLOR)
 
 #Configuration
-st.set_page_config(page_title="Car Plate + Brand (YOLOv8)", layout="wide")
-st.title("Car Plate Detection System (Yolov8 + Brand)")
+st.set_page_config(
+    page_title="Car Plate Detection System (YOLOv8)",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
+st.title("Car Plate Detection System (Yolov8)")
 
 BASE_DIR = Path(__file__).resolve().parent
 MODELS_DIR = BASE_DIR / "models"
