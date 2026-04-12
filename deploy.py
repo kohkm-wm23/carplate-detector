@@ -23,9 +23,8 @@ def _register_heif_opener():
     except ImportError:
         pass
 
-
+#decode upload file to bgr
 def decode_upload_to_bgr(uploaded_file) -> np.ndarray | None:
-    """JPEG/PNG via OpenCV; HEIC/HEIF via Pillow + pillow-heif (iPhone photos)."""
     raw = uploaded_file.getvalue()
     suffix = Path(uploaded_file.name or "").suffix.lower()
     if suffix in (".heic", ".heif"):
@@ -42,9 +41,7 @@ def decode_upload_to_bgr(uploaded_file) -> np.ndarray | None:
     buf = np.asarray(bytearray(raw), dtype=np.uint8)
     return cv2.imdecode(buf, cv2.IMREAD_COLOR)
 
-# -----------------------------
-# Config
-# -----------------------------
+#Configuration
 st.set_page_config(page_title="Car Plate + Brand (YOLOv8)", layout="wide")
 st.title("Car Plate Detection System (Yolov8 + Brand)")
 
@@ -58,10 +55,8 @@ CAR_MODEL_PATH = MODELS_DIR / "carobject" / "best.pt"
 PROJECT_OUT = BASE_DIR / "outputs"
 PROJECT_OUT.mkdir(exist_ok=True)
 
-# Malaysia plate (general): 1-3 letters + 1-4 digits + optional trailing letter
 PLATE_REGEX = re.compile(r"^[A-Z]{1,3}[0-9]{1,4}[A-Z]?$")
 
-# Match run_ocr_stable() minimums so we prefer crops OCR can actually use
 MIN_PLATE_CROP_W = 90
 MIN_PLATE_CROP_H = 25
 _PAD_X_STD = 0.03
@@ -70,9 +65,7 @@ _PAD_X_EXPAND = 0.10
 _PAD_Y_EXPAND = 0.20
 
 
-# -----------------------------
-# Model + OCR loaders
-# -----------------------------
+#Model + OCR loaders
 @st.cache_resource
 def load_plate_model():
     if not PLATE_MODEL_PATH.exists():
@@ -120,9 +113,8 @@ def preprocess_for_ocr(crop_bgr: np.ndarray):
     _, th = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     return th
 
-
+#preprocess for ocr grayscale bgr
 def preprocess_for_ocr_grayscale_bgr(crop_bgr: np.ndarray):
-    """Upscaled grayscale as BGR — second pass when Otsu binary fails OCR."""
     h, w = crop_bgr.shape[:2]
     if h < 10 or w < 20:
         return None
@@ -181,9 +173,8 @@ def run_ocr_stable(crop_bgr: np.ndarray, ocr_engine) -> str:
         return out
     return ""
 
-
+#extract padded crop
 def _extract_padded_crop(frame_bgr, x1, y1, x2, y2, fh, fw, pad_x_frac: float, pad_y_frac: float):
-    """xyxy from detector (not yet padded). Returns crop and clip coordinates after padding."""
     pad_x = int((x2 - x1) * pad_x_frac)
     pad_y = int((y2 - y1) * pad_y_frac)
     x1p = max(0, x1 - pad_x)
@@ -197,9 +188,8 @@ def _extract_padded_crop(frame_bgr, x1, y1, x2, y2, fh, fw, pad_x_frac: float, p
         return None, None
     return crop, (x1p, y1p, x2p, y2p)
 
-
+#crop for single plate box
 def _crop_for_single_plate_box(frame_bgr, x1, y1, x2, y2, fh, fw):
-    """Padded crop for one plate box (same padding strategy as former single-plate path)."""
     crop, _ = _extract_padded_crop(frame_bgr, x1, y1, x2, y2, fh, fw, _PAD_X_STD, _PAD_Y_STD)
     if crop is not None:
         ch, cw = crop.shape[:2]
@@ -213,12 +203,8 @@ def _crop_for_single_plate_box(frame_bgr, x1, y1, x2, y2, fh, fw):
     crop, _ = _extract_padded_crop(frame_bgr, x1, y1, x2, y2, fh, fw, _PAD_X_STD, _PAD_Y_STD)
     return crop
 
-
+#enumerate plates left to right
 def enumerate_plates_left_to_right(frame_bgr: np.ndarray, plate_result, max_cars: int) -> tuple:
-    """
-    Plate detections: keep up to max_cars with largest bbox area (drops tiny / distant plates),
-    then sort left → right. Returns (plates_ltr, n_detected_raw).
-    """
     boxes = plate_result.boxes
     if boxes is None or len(boxes) == 0:
         return [], 0
@@ -269,7 +255,6 @@ def _iou_xyxy(a: tuple, b: tuple) -> float:
 
 
 def _dedupe_overlapping_cars(rows: list, iou_thr: float = 0.55) -> list:
-    """Greedy NMS-style dedupe to avoid same car repeated twice."""
     if not rows:
         return []
     ordered = sorted(rows, key=lambda r: (r["conf"], r["area"]), reverse=True)
@@ -279,9 +264,8 @@ def _dedupe_overlapping_cars(rows: list, iou_thr: float = 0.55) -> list:
             kept.append(r)
     return kept
 
-
+#enumerate cars left to right
 def enumerate_cars_left_to_right(frame_bgr: np.ndarray, car_result, max_cars: int) -> tuple:
-    """Car detections: keep up to max_cars by area, then sort left → right."""
     boxes = None if car_result is None else car_result.boxes
     if boxes is None or len(boxes) == 0:
         return [], 0
@@ -312,9 +296,8 @@ def enumerate_cars_left_to_right(frame_bgr: np.ndarray, car_result, max_cars: in
     rows.sort(key=lambda r: r["x_center"])
     return rows, n_raw
 
-
+#extract brands left to right
 def extract_brands_left_to_right(brand_result, brand_model) -> list:
-    """All brand boxes sorted by horizontal center (left → right)."""
     if brand_result is None or brand_result.boxes is None or len(brand_result.boxes) == 0:
         return []
     boxes = brand_result.boxes
@@ -338,9 +321,8 @@ def extract_brands_left_to_right(brand_result, brand_model) -> list:
     rows.sort(key=lambda r: r["x_center"])
     return rows
 
-
+#hsv center to single color label
 def _hsv_center_to_single_color_label(h: float, s: float, v: float) -> str:
-    """Single dominant color name (no mixed labels)."""
     h, s, v = float(h), float(s), float(v)
     if v < 38:
         return "Black"
@@ -364,12 +346,8 @@ def _hsv_center_to_single_color_label(h: float, s: float, v: float) -> str:
         return "Purple"
     return "Brown"
 
-
+#estimate body color from car crop
 def estimate_body_color_from_car_crop(car_crop_bgr: np.ndarray) -> tuple:
-    """
-    Dominant body color from car crop via HSV k-means.
-    Returns (label, pct, sample_bgr).
-    """
     if car_crop_bgr is None or car_crop_bgr.size < 30:
         return "Unknown", 0.0, None
     roi = car_crop_bgr
@@ -439,7 +417,6 @@ def _cls_name(names, cls_id: int) -> str:
 
 
 def _draw_plate_rows_bgr(im_bgr: np.ndarray, plates_ltr: list, names) -> None:
-    """Draw only the plate boxes we kept (after max-cars filter)."""
     col = (0, 215, 255)
     for p in plates_ltr:
         x1, y1, x2, y2 = p["xyxy"]
@@ -462,7 +439,6 @@ def _draw_plate_rows_bgr(im_bgr: np.ndarray, plates_ltr: list, names) -> None:
 
 
 def _draw_body_color_captions(im_bgr: np.ndarray, plates_ltr: list) -> None:
-    """Short color label under each plate box (if estimated)."""
     col = (220, 230, 255)
     for p in plates_ltr:
         lab = p.get("body_color", "") or ""
@@ -542,7 +518,6 @@ def draw_car_first_detection_plot(
     car_model,
     n_cars_raw: int = 0,
 ) -> np.ndarray:
-    """Single BGR image: kept cars + per-car brand/plate overlays + car index."""
     canvas = frame_bgr.copy()
     h = canvas.shape[0]
 
@@ -602,7 +577,7 @@ _RCARD_BOX = (
     "background:rgba(128,132,149,0.06);box-sizing:border-box;"
 )
 
-# Results: fixed table columns + equal card height (Streamlit-safe alignment)
+#fixed table columns + equal card height
 _RESULT_CARD_MIN_PX = 300
 _RCARD_CELL = (
     f"{_RCARD_BOX} min-height:{_RESULT_CARD_MIN_PX}px;height:100%;width:100%;max-width:100%;"
@@ -741,8 +716,6 @@ def _body_color_card_html(label: str, pct: float = 0.0) -> str:
 
 
 def _build_results_table_html(paired_rows: list, brand_model) -> str:
-    """One HTML table: fixed 34/33/33 columns, aligned across all cars (avoids Streamlit grid bugs)."""
-    # Streamlit themes often style markdown tables; inline border:none loses to those rules.
     col_pad = (
         "padding:0 10px 0 0;border:none!important;border-width:0!important;"
         "vertical-align:top;width:34%;",
@@ -817,7 +790,6 @@ def _build_results_table_html(paired_rows: list, brand_model) -> str:
 
 
 def render_results_section(paired_rows: list, brand_model, n_cars_raw: int = 0):
-    """One row per car, with optional plate/brand/color details."""
     st.markdown("### Results")
     st.markdown(
         "<hr style='margin:0.4rem 0 1.2rem 0;border:none;border-top:1px solid rgba(128,132,149,0.2);' />",
@@ -860,9 +832,7 @@ def render_results_section(paired_rows: list, brand_model, n_cars_raw: int = 0):
     st.markdown(_build_results_table_html(paired_rows, brand_model), unsafe_allow_html=True)
 
 
-# -----------------------------
-# Load models + UI
-# -----------------------------
+#Load models + UI
 try:
     car_model = load_car_model()
     plate_model = load_plate_model()
